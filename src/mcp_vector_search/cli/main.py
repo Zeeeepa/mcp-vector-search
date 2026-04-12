@@ -193,6 +193,7 @@ explore unfamiliar projects, and integrate with AI coding tools via MCP.
 from .commands.analyze import analyze_app  # noqa: E402
 from .commands.audit import audit_app  # noqa: E402
 from .commands.chat import chat_app  # noqa: E402
+from .commands.chat_local import chat_local_app  # noqa: E402
 from .commands.config import config_app  # noqa: E402
 from .commands.demo import demo_app  # noqa: E402
 from .commands.embed import embed_app  # noqa: E402
@@ -263,6 +264,13 @@ app.add_typer(search_app, name="search", help="🔍 Search code semantically")
 app.add_typer(chat_app, name="chat", help="🤖 Ask questions about code with LLM")
 app.add_typer(
     chat_app, name="ask", help="🤖 Ask questions about code with LLM (alias for chat)"
+)
+
+# 7.6. CHAT-LOCAL - Local Ollama inference (no API key needed)
+app.add_typer(
+    chat_local_app,
+    name="chat-local",
+    help="🏠 Chat with code using local Ollama inference (no API key needed)",
 )
 
 # 8. INDEX - Unified index command (new hierarchy)

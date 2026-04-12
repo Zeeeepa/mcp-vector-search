@@ -1,4 +1,4 @@
-"""LLM client for intelligent code search using OpenAI, OpenRouter, or AWS Bedrock API."""
+"""LLM client for intelligent code search using OpenAI, OpenRouter, AWS Bedrock, or Ollama API."""
 
 import asyncio
 import json
@@ -13,10 +13,15 @@ from loguru import logger
 from .exceptions import SearchError
 
 # Type alias for provider
-LLMProvider = Literal["openai", "openrouter", "bedrock"]
+LLMProvider = Literal["openai", "openrouter", "bedrock", "ollama"]
 
 # Type alias for intent
 IntentType = Literal["find", "answer", "analyze"]
+
+# XML tag used for prompt-engineered tool calls (Ollama/local models)
+_TOOL_CALL_TAG = "tool_call"
+_TOOL_CALL_OPEN = f"<{_TOOL_CALL_TAG}>"
+_TOOL_CALL_CLOSE = f"</{_TOOL_CALL_TAG}>"
 
 
 class LLMClient:
@@ -33,7 +38,7 @@ class LLMClient:
     3. Auto-detect: Bedrock (if AWS creds) → OpenRouter → OpenAI
 
     Default Models:
-    - Bedrock: Claude Sonnet 4.6 (us.anthropic.claude-sonnet-4-6-20250514-v1:0)
+    - Bedrock: Claude 3.5 Haiku (anthropic.claude-3-5-haiku-20241022-v1:0)
     - OpenRouter: Claude Opus 4.5
     - OpenAI: GPT-4o-mini
     """
@@ -42,20 +47,22 @@ class LLMClient:
     DEFAULT_MODELS = {
         "openai": "gpt-4o-mini",  # Fast, cheap, comparable to claude-3-haiku
         "openrouter": "anthropic/claude-opus-4.5",  # Claude Opus 4.5 for chat REPL
-        "bedrock": "us.anthropic.claude-sonnet-4-6-20250514-v1:0",  # Claude Sonnet 4.6 (cross-region inference)
+        "bedrock": "anthropic.claude-3-5-haiku-20241022-v1:0",  # Claude 3.5 Haiku (valid cross-region profile)
+        "ollama": "gemma3:latest",  # Best open-weights model for local inference
     }
 
     # Advanced "thinking" models for complex queries (--think flag)
     THINKING_MODELS = {
         "openai": "gpt-4o",  # More capable, better reasoning
         "openrouter": "anthropic/claude-opus-4.5",  # Claude Opus 4.5 for deep analysis
-        "bedrock": "anthropic.claude-opus-4-20250514-v1:0",  # Claude Opus 4
+        "bedrock": "anthropic.claude-3-5-sonnet-20241022-v2:0",  # Claude 3.5 Sonnet v2 (valid cross-region profile)
     }
 
     # API endpoints
     API_ENDPOINTS = {
         "openai": "https://api.openai.com/v1/chat/completions",
         "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+        "ollama": "http://localhost:11434/v1/chat/completions",  # OpenAI-compatible
     }
 
     TIMEOUT_SECONDS = 30.0
@@ -114,6 +121,7 @@ class LLMClient:
                     "Bedrock provider specified but AWS credentials not found. "
                     "Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
                 )
+            # ollama: no key required — validated at connection time
         else:
             # Auto-detect provider (prefer Bedrock → OpenRouter → OpenAI)
             if self._bedrock_available:
@@ -126,7 +134,8 @@ class LLMClient:
                 raise ValueError(
                     "No API key or AWS credentials found. Please set AWS credentials "
                     "(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) for Bedrock, "
-                    "OPENROUTER_API_KEY for OpenRouter, or OPENAI_API_KEY for OpenAI."
+                    "OPENROUTER_API_KEY for OpenRouter, or OPENAI_API_KEY for OpenAI. "
+                    "Alternatively, start Ollama (ollama serve) and use --provider ollama."
                 )
 
         # Set API key and endpoint based on provider
@@ -149,6 +158,14 @@ class LLMClient:
                 else self.DEFAULT_MODELS["openrouter"]
             )
             self.model = model or os.environ.get("OPENROUTER_MODEL", default_model)
+        elif self.provider == "ollama":
+            self.api_key = None  # No auth required for local Ollama
+            self.api_endpoint = os.environ.get(
+                "OLLAMA_API_URL", self.API_ENDPOINTS["ollama"]
+            )
+            self.model = model or os.environ.get(
+                "OLLAMA_MODEL", self.DEFAULT_MODELS["ollama"]
+            )
         else:  # bedrock
             self.api_key = None  # Not used for Bedrock
             self.api_endpoint = None  # Not used for Bedrock
@@ -164,6 +181,23 @@ class LLMClient:
         logger.debug(
             f"Initialized LLM client with provider: {self.provider}, model: {self.model}"
         )
+
+    def _get_endpoint(self) -> str:
+        """Get API endpoint URL for current provider, raising if not configured.
+
+        Returns:
+            The API endpoint URL string
+
+        Raises:
+            ValueError: If endpoint is not configured for the provider
+        """
+        endpoint = self.api_endpoint  # local var so Pyright can narrow str | None → str
+        if endpoint is None:
+            raise ValueError(
+                f"No API endpoint configured for provider: {self.provider}. "
+                "This is typically only used for Bedrock, which doesn't use HTTP endpoints."
+            )
+        return endpoint
 
     @property
     def _bedrock_available(self) -> bool:
@@ -375,8 +409,19 @@ Select the top {top_n} most relevant results:"""
             logger.error(f"Failed to analyze results: {e}")
             raise SearchError(f"LLM analysis failed: {e}") from e
 
+    @classmethod
+    async def is_ollama_available(cls) -> bool:
+        """Check if Ollama is running and reachable.
+
+        Returns:
+            True if Ollama is available
+        """
+        from .ollama_detector import detect_ollama
+
+        return await detect_ollama()
+
     async def _chat_completion(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        """Make chat completion request to OpenAI, OpenRouter, or Bedrock API.
+        """Make chat completion request to OpenAI, OpenRouter, Bedrock, or Ollama API.
 
         Args:
             messages: List of message dictionaries with role and content
@@ -392,10 +437,17 @@ Select the top {top_n} most relevant results:"""
             return await self._bedrock_chat_completion(messages)
 
         # Build headers based on provider
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        if self.provider == "ollama":
+            # Ollama's OpenAI-compat endpoint: no real auth required
+            headers = {
+                "Authorization": "Bearer ollama",
+                "Content-Type": "application/json",
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
 
         # OpenRouter-specific headers
         if self.provider == "openrouter":
@@ -412,13 +464,22 @@ Select the top {top_n} most relevant results:"""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    self.api_endpoint,
+                    self._get_endpoint(),
                     headers=headers,
                     json=payload,
                 )
 
                 response.raise_for_status()
                 return response.json()
+
+        except httpx.ConnectError as e:
+            if self.provider == "ollama":
+                raise SearchError(
+                    "Ollama not running. Start it with: ollama serve\n"
+                    "Then pull a model: ollama pull gemma3"
+                ) from e
+            logger.error(f"{provider_name} connection failed: {e}")
+            raise SearchError(f"Cannot connect to {provider_name}: {e}") from e
 
         except httpx.TimeoutException as e:
             logger.error(f"{provider_name} API timeout after {self.timeout}s")
@@ -441,7 +502,13 @@ Select the top {top_n} most relevant results:"""
                 pass
 
             if status_code == 400:
-                error_msg = f"{error_msg}. Check model name and request format."
+                if self.provider == "ollama":
+                    error_msg = (
+                        f"{error_msg}. Check model name with: ollama list\n"
+                        f"Current model: {self.model}"
+                    )
+                else:
+                    error_msg = f"{error_msg}. Check model name and request format."
             elif status_code == 401:
                 env_var = (
                     "OPENAI_API_KEY"
@@ -761,10 +828,16 @@ Intent:"""
                 yield chunk
             return
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        if self.provider == "ollama":
+            headers = {
+                "Authorization": "Bearer ollama",
+                "Content-Type": "application/json",
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
 
         if self.provider == "openrouter":
             headers["HTTP-Referer"] = "https://github.com/bobmatnyc/mcp-vector-search"
@@ -781,7 +854,7 @@ Intent:"""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream(
-                    "POST", self.api_endpoint, headers=headers, json=payload
+                    "POST", self._get_endpoint(), headers=headers, json=payload
                 ) as response:
                     response.raise_for_status()
 
@@ -974,6 +1047,408 @@ Guidelines:
             logger.error(f"Failed to generate answer: {e}")
             raise SearchError(f"Failed to generate answer: {e}") from e
 
+    # ------------------------------------------------------------------
+    # Ollama prompt-engineering tool-call helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tools_to_system_prompt(tools: list[dict[str, Any]]) -> str:
+        """Convert OpenAI tool-schema list into a system-prompt block for Ollama.
+
+        Gemma and similar models don't support native function calling.
+        We describe the tools in the system prompt and ask the model to
+        output structured XML tags that we can parse.
+
+        Format injected into system prompt:
+            You have access to tools. To call a tool output EXACTLY:
+            <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+
+            After each tool result is shown you may call another tool or give
+            your final answer (no tag).
+
+        Args:
+            tools: OpenAI-format tool definitions list
+
+        Returns:
+            Formatted string block to append to the system prompt
+        """
+        if not tools:
+            return ""
+
+        lines = [
+            "",
+            "## Available Tools",
+            "",
+            "You have access to the following tools. To use a tool output EXACTLY this format "
+            "(one per response, nothing before or after the tag on the same line):",
+            "",
+            '    <tool_call>{"name": "tool_name", "arguments": {"arg": "value"}}</tool_call>',
+            "",
+            "After I show you the tool result, you can call another tool or give your final answer.",
+            "When you are done gathering information, answer the user's question directly without a tag.",
+            "",
+            "### Tool Definitions",
+            "",
+        ]
+
+        for tool in tools:
+            func = tool.get("function", tool)
+            name = func.get("name", "unknown")
+            desc = func.get("description", "")
+            params = func.get("parameters", {})
+            props = params.get("properties", {})
+            required = params.get("required", [])
+
+            lines.append(f"**{name}**: {desc}")
+            if props:
+                param_parts = []
+                for pname, pdef in props.items():
+                    ptype = pdef.get("type", "any")
+                    pdesc = pdef.get("description", "")
+                    req_marker = " (required)" if pname in required else ""
+                    param_parts.append(f"  - {pname}: {ptype}{req_marker} — {pdesc}")
+                lines.extend(param_parts)
+            lines.append("")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _inject_tools_into_messages(
+        messages: list[dict[str, Any]], tool_prompt: str
+    ) -> list[dict[str, Any]]:
+        """Append the tool-prompt block to the last system message (or prepend one).
+
+        Args:
+            messages: Conversation message list
+            tool_prompt: Tool description block
+
+        Returns:
+            Modified message list (new list, originals not mutated)
+        """
+        if not tool_prompt:
+            return messages
+
+        result = list(messages)
+
+        # Find the last system message
+        last_sys_idx = None
+        for i, msg in enumerate(result):
+            if msg.get("role") == "system":
+                last_sys_idx = i
+
+        if last_sys_idx is not None:
+            existing = result[last_sys_idx]
+            result[last_sys_idx] = {
+                **existing,
+                "content": existing["content"] + tool_prompt,
+            }
+        else:
+            result.insert(0, {"role": "system", "content": tool_prompt.strip()})
+
+        return result
+
+    @staticmethod
+    def _parse_ollama_tool_calls(content: str) -> list[dict[str, Any]]:
+        """Extract tool call dicts from model output.
+
+        Handles three output formats used by different local models:
+        1. ``<tool_call>{"name": ..., "arguments": ...}</tool_call>`` XML tags
+           (prompt-engineered models)
+        2. Bare JSON object with ``"name"`` and ``"arguments"`` keys
+           (qwen2.5-coder and similar models that ignore the tools parameter
+           but still output structured JSON)
+        3. JSON code-fence blocks containing the above structure
+
+        Args:
+            content: Raw text response from the model
+
+        Returns:
+            List of parsed tool call dicts (OpenAI tool_calls format), may be empty
+        """
+        calls: list[dict[str, Any]] = []
+
+        # --- Format 1: <tool_call>...</tool_call> XML tags ---
+        xml_pattern = re.compile(
+            rf"{re.escape(_TOOL_CALL_OPEN)}\s*(.*?)\s*{re.escape(_TOOL_CALL_CLOSE)}",
+            re.DOTALL,
+        )
+        for match_idx, m in enumerate(xml_pattern.finditer(content)):
+            raw = m.group(1).strip()
+            try:
+                parsed = json.loads(raw)
+                name = parsed.get("name", "")
+                args = parsed.get("arguments", parsed.get("args", {}))
+                if name:
+                    calls.append(
+                        {
+                            "id": f"ollama_call_{match_idx}",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(args),
+                            },
+                        }
+                    )
+            except json.JSONDecodeError as exc:
+                logger.debug(f"Could not parse tool_call XML block: {exc}\nRaw: {raw}")
+
+        if calls:
+            return calls
+
+        stripped = content.strip()
+
+        # --- Format 2: bare JSON object or JSON code-fence block ---
+        # e.g. {"name": "search_code", "arguments": {"query": "..."}}
+        # Also handles mixed content where a JSON block is embedded in prose.
+        # Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+        code_fence = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped)
+        json_candidates: list[str] = []
+        if code_fence:
+            json_candidates.append(code_fence.group(1).strip())
+        else:
+            # Try whole content as JSON first
+            json_candidates.append(stripped)
+            # Also scan for embedded JSON objects (e.g. text\n{...} )
+            for m in re.finditer(
+                r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}", content, re.DOTALL
+            ):
+                candidate = m.group(0).strip()
+                if candidate not in json_candidates:
+                    json_candidates.append(candidate)
+
+        for json_candidate in json_candidates:
+            try:
+                parsed = json.loads(json_candidate)
+                # Must look like a tool call: has "name" (str) and "arguments" (dict)
+                if (
+                    isinstance(parsed, dict)
+                    and isinstance(parsed.get("name"), str)
+                    and parsed["name"]
+                    and isinstance(parsed.get("arguments", parsed.get("args")), dict)
+                ):
+                    name = parsed["name"]
+                    args = parsed.get("arguments", parsed.get("args", {}))
+                    calls.append(
+                        {
+                            "id": "ollama_call_0",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(args),
+                            },
+                        }
+                    )
+                    break  # Take first valid tool call found
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if calls:
+            return calls
+
+        # --- Format 3: "function_name {json_args}" on a single line ---
+        # Some models (qwen2.5-coder) emit: search_code {"query": "..."}
+        fn_json_pattern = re.compile(
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\s+(\{.*\})\s*$",
+            re.DOTALL,
+        )
+        fn_match = fn_json_pattern.match(stripped)
+        if fn_match:
+            fn_name = fn_match.group(1)
+            raw_args = fn_match.group(2).strip()
+            try:
+                args = json.loads(raw_args)
+                if isinstance(args, dict):
+                    calls.append(
+                        {
+                            "id": "ollama_call_0",
+                            "type": "function",
+                            "function": {
+                                "name": fn_name,
+                                "arguments": json.dumps(args),
+                            },
+                        }
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return calls
+
+    async def _ollama_native_chat_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Native function-calling for Ollama via the OpenAI-compatible endpoint.
+
+        Ollama's /v1/chat/completions endpoint accepts ``tools`` in the request
+        body (same schema as OpenAI) for models that support it (mistral,
+        qwen2.5-coder, llama3, gemma3, etc.).
+
+        Args:
+            messages: Conversation messages
+            tools: OpenAI-format tool list
+
+        Returns:
+            OpenAI-compatible response dict
+
+        Raises:
+            SearchError: If request fails
+        """
+        headers = {
+            "Authorization": "Bearer ollama",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                self._get_endpoint(), headers=headers, json=payload
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def _ollama_chat_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Tool-calling for Ollama: native API first, XML fallback second.
+
+        Strategy:
+        1. Try Ollama's native ``tools:`` parameter (OpenAI-compatible format).
+           Models like qwen2.5-coder, llama3, gemma3 honour this natively and
+           return ``tool_calls`` in the response.
+        2. If the response has no ``tool_calls`` AND the content text contains
+           ``<tool_call>`` tags, parse those tags as a fallback (handles older
+           models that were prompted with XML).
+        3. If the native call fails with a 400/422 (model doesn't support
+           tools natively), fall back to the prompt-engineering approach.
+
+        Args:
+            messages: Conversation messages
+            tools: OpenAI-format tool list
+
+        Returns:
+            OpenAI-compatible response dict (with tool_calls if a tool was requested)
+        """
+        # --- Attempt 1: native function calling ---
+        try:
+            response = await self._ollama_native_chat_with_tools(messages, tools)
+        except httpx.HTTPStatusError as exc:
+            # Some older Ollama builds / models reject the tools parameter
+            if exc.response.status_code in (400, 422):
+                logger.debug(
+                    f"Ollama native tool calling failed ({exc.response.status_code}), "
+                    "falling back to prompt-engineering approach"
+                )
+                response = None
+            else:
+                raise
+        except Exception:
+            response = None
+
+        if response is not None:
+            # Check if model returned native tool_calls
+            msg = response.get("choices", [{}])[0].get("message", {})
+            if msg.get("tool_calls"):
+                logger.debug("Ollama returned native tool_calls — using them directly")
+                return response
+
+            # Native call succeeded but no tool_calls — check for XML fallback tags
+            content = msg.get("content", "") or ""
+            xml_calls = self._parse_ollama_tool_calls(content)
+            if xml_calls:
+                logger.debug(
+                    "Ollama response contained <tool_call> XML tags — parsed as fallback"
+                )
+                clean_content = re.sub(
+                    rf"{re.escape(_TOOL_CALL_OPEN)}.*?{re.escape(_TOOL_CALL_CLOSE)}",
+                    "",
+                    content,
+                    flags=re.DOTALL,
+                ).strip()
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": clean_content or None,
+                                "tool_calls": xml_calls,
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+
+            # No tool calls at all — plain text answer
+            return response
+
+        # --- Attempt 2: prompt-engineering fallback ---
+        logger.debug("Using prompt-engineering tool-call fallback for Ollama")
+        tool_prompt = self._tools_to_system_prompt(tools)
+        patched_messages = self._inject_tools_into_messages(messages, tool_prompt)
+
+        # Strip any existing tool / tool_result messages that Ollama can't handle;
+        # flatten them into assistant/user text instead.
+        normalized: list[dict[str, Any]] = []
+        for msg in patched_messages:
+            role = msg.get("role", "")
+            if role == "tool":
+                normalized.append(
+                    {
+                        "role": "user",
+                        "content": f"[Tool result]\n{msg.get('content', '')}",
+                    }
+                )
+            elif role == "assistant" and msg.get("tool_calls"):
+                tc = msg["tool_calls"][0]["function"]
+                normalized.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"{_TOOL_CALL_OPEN}"
+                            f'{{"name": "{tc["name"]}", '
+                            f'"arguments": {tc["arguments"]}}}'
+                            f"{_TOOL_CALL_CLOSE}"
+                        ),
+                    }
+                )
+            else:
+                normalized.append(msg)
+
+        fallback_response = await self._chat_completion(normalized)
+
+        content = (
+            fallback_response.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            or ""
+        )
+        tool_calls = self._parse_ollama_tool_calls(content)
+
+        if tool_calls:
+            clean_content = re.sub(
+                rf"{re.escape(_TOOL_CALL_OPEN)}.*?{re.escape(_TOOL_CALL_CLOSE)}",
+                "",
+                content,
+                flags=re.DOTALL,
+            ).strip()
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": clean_content or None,
+                            "tool_calls": tool_calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+
+        return fallback_response
+
     async def chat_with_tools(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -991,7 +1466,12 @@ Guidelines:
 
         Note:
             Bedrock tool calling is not yet implemented. Falls back to regular chat.
+            Ollama tries native function calling first, then XML prompt-engineering.
         """
+        # Ollama: native function calling with XML fallback
+        if self.provider == "ollama":
+            return await self._ollama_chat_with_tools(messages, tools)
+
         # TODO: Implement Bedrock tool calling when needed
         # Bedrock uses a different tool format (toolConfig) than OpenAI
         if self.provider == "bedrock":
@@ -1021,7 +1501,7 @@ Guidelines:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    self.api_endpoint,
+                    self._get_endpoint(),
                     headers=headers,
                     json=payload,
                 )
