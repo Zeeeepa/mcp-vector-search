@@ -1,14 +1,21 @@
 """Detect Ollama and available local models."""
 
 import asyncio
+import logging
 
 import httpx
-from loguru import logger
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 # Ordered preference list — first match wins (case-insensitive substring match)
 PREFERRED_MODELS = [
+    # Gemma4 - newest, best for code, supports function calling
+    "gemma4:latest",
+    "gemma4:31b",
+    "gemma4:9b",
+    "gemma4:e4b",
     # Gemma3 - best for code, supports function calling
     "gemma3:latest",
     "gemma3:27b",
@@ -71,11 +78,13 @@ CONTEXT_LIMITS: dict[str, dict[str, int]] = {
     "72b": {"max_iterations": 15, "max_results": 8},
     "40b": {"max_iterations": 12, "max_results": 7},
     "32b": {"max_iterations": 12, "max_results": 7},
+    "31b": {"max_iterations": 12, "max_results": 7},
     "27b": {"max_iterations": 10, "max_results": 6},
     "14b": {"max_iterations": 10, "max_results": 6},
     "12b": {"max_iterations": 10, "max_results": 6},
     "9b": {"max_iterations": 8, "max_results": 5},
     "7b": {"max_iterations": 8, "max_results": 5},
+    "e4b": {"max_iterations": 8, "max_results": 5},
     "4b": {"max_iterations": 5, "max_results": 3},
     "3b": {"max_iterations": 5, "max_results": 3},
     "2b": {"max_iterations": 3, "max_results": 3},
