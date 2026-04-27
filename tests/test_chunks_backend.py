@@ -585,3 +585,66 @@ async def test_initialize_force_false_preserves_existing_data(
     stats = await backend2.get_stats()
     assert stats["total"] == 2
     await backend2.close()
+
+
+@pytest.mark.asyncio
+async def test_get_all_indexed_file_hashes_uses_dominant_hash(temp_db_path):
+    """Regression: stale duplicate rows must not poison the file_path→hash map.
+
+    When a previous partial index leaves rows with the same file_path but
+    different file_hash values, ``get_all_indexed_file_hashes`` must return
+    the most-frequent (dominant) hash so file-move detection (which matches
+    old_path → new_path by content hash) still works.
+    """
+    backend = ChunksBackend(temp_db_path)
+    await backend.initialize()
+
+    # Write the STALE chunk FIRST so it lands first in storage order.
+    # This is the worst-case scenario for `.first()` — it would pick the
+    # stale hash and break file-move detection.
+    stale_hash = "b" * 64
+    stale_chunk = [
+        {
+            "chunk_id": "stale_0",
+            "file_path": "src/main.py",
+            "content": "def stale(): pass",
+            "language": "python",
+            "start_line": 99,
+            "end_line": 99,
+            "chunk_type": "function",
+            "name": "stale",
+            "signature": "def stale()",
+            "complexity": 1,
+            "token_count": 5,
+        }
+    ]
+    await backend.add_chunks(stale_chunk, stale_hash)
+
+    # Now write 3 chunks with the "good" (correct) hash for src/main.py.
+    good_hash = "a" * 64
+    good_chunks = [
+        {
+            "chunk_id": f"good_{i}",
+            "file_path": "src/main.py",
+            "content": f"def fn{i}(): pass",
+            "language": "python",
+            "start_line": i,
+            "end_line": i,
+            "chunk_type": "function",
+            "name": f"fn{i}",
+            "signature": f"def fn{i}()",
+            "complexity": 1,
+            "token_count": 5,
+        }
+        for i in range(3)
+    ]
+    await backend.add_chunks(good_chunks, good_hash)
+
+    # The dominant hash (3 rows) must win over the stale hash (1 row).
+    file_hashes = await backend.get_all_indexed_file_hashes()
+    assert file_hashes["src/main.py"] == good_hash, (
+        f"Expected dominant hash {good_hash!r}, got {file_hashes['src/main.py']!r}. "
+        "This breaks file_move_detector — moved files would re-embed unnecessarily."
+    )
+
+    await backend.close()

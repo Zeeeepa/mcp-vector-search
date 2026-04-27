@@ -11,13 +11,13 @@ before embedding. Enables:
 import hashlib
 import platform
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import lancedb
-import pyarrow as pa
-from loguru import logger
+import lancedb  # type: ignore[import-untyped]
+import pyarrow as pa  # type: ignore[import-untyped]
+from loguru import logger  # type: ignore[import-untyped]
 
 from .exceptions import (
     DatabaseError,
@@ -149,10 +149,14 @@ class ChunksBackend:
         LanceDB list_tables() may return a response object with a .tables
         attribute or a plain list, depending on version.
         """
+        if self._db is None:
+            raise DatabaseNotInitializedError("Chunks backend not initialized")
         tables_response = self._db.list_tables()
         if hasattr(tables_response, "tables"):
-            return tables_response.tables
-        return tables_response
+            tables: list[str] = tables_response.tables
+            return tables
+        # Older lancedb versions returned a plain list[str] directly.
+        return list(tables_response)  # type: ignore[arg-type]
 
     def _idempotent_create_table(
         self,
@@ -184,6 +188,8 @@ class ChunksBackend:
             kwargs["mode"] = mode
         else:
             kwargs["exist_ok"] = True
+        if self._db is None:
+            raise DatabaseNotInitializedError("Chunks backend not initialized")
         return self._db.create_table(name, data, **kwargs)
 
     async def initialize(self, force: bool = False) -> None:
@@ -301,7 +307,7 @@ class ChunksBackend:
         try:
             # Normalize and validate chunks
             normalized_chunks = []
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(UTC).isoformat()
 
             for chunk in chunks:
                 # Required fields
@@ -415,7 +421,7 @@ class ChunksBackend:
         try:
             # Normalize and validate chunks
             normalized_chunks = []
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(UTC).isoformat()
 
             for chunk in chunks:
                 # Required fields (including file_hash)
@@ -514,7 +520,7 @@ class ChunksBackend:
 
         try:
             # Add timestamp and status fields to each chunk
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             for chunk in chunks:
                 # Ensure git blame fields exist with defaults
                 chunk.setdefault("last_author", "")
@@ -629,10 +635,30 @@ class ChunksBackend:
             if len(result) == 0:
                 return {}
 
-            # Convert to pandas for groupby (get first hash per file, handles duplicates)
+            # Convert to pandas for groupby (get most-frequent hash per file).
+            # All chunks from the same file SHOULD share one hash, but stale rows
+            # from a previous partial index can leave duplicates with mismatched
+            # hashes. Using `.first()` returns whichever row LanceDB happened to
+            # store first — possibly the stale one — which breaks file-move
+            # detection (file_move_detector.py relies on this hash to correlate
+            # old_path → new_path by content). Take the mode (most-frequent
+            # hash) instead: it is robust to a small number of corrupt rows and
+            # falls back to a deterministic value when all rows agree.
             df = result.to_pandas()
-            # Group by file_path and take first hash (all chunks from same file have same hash)
-            file_hashes = df.groupby("file_path")["file_hash"].first().to_dict()
+
+            def _dominant_hash(series: Any) -> str:
+                # `mode()` returns all tied values in sorted order; take the
+                # first for determinism. Series is guaranteed non-empty here
+                # because groupby only yields non-empty groups.
+                modes = series.mode()
+                if not modes.empty:
+                    return str(modes.iloc[0])
+                # Defensive fallback (shouldn't trigger): use the last value.
+                return str(series.iloc[-1])
+
+            file_hashes = (
+                df.groupby("file_path")["file_hash"].agg(_dominant_hash).to_dict()
+            )
 
             logger.debug(
                 f"Loaded {len(file_hashes)} indexed file paths for change detection"
@@ -763,7 +789,7 @@ class ChunksBackend:
             # Update fields
             df["embedding_status"] = "processing"
             df["embedding_batch_id"] = batch_id
-            df["updated_at"] = datetime.utcnow().isoformat()
+            df["updated_at"] = datetime.now(UTC).isoformat()
 
             # Delete old rows
             self._table.delete(filter_expr)
@@ -803,7 +829,7 @@ class ChunksBackend:
                 where=filter_expr,
                 values={
                     "embedding_status": "complete",
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                     "error_message": "",
                 },
             )
@@ -845,7 +871,7 @@ class ChunksBackend:
             df = result.to_pandas()
 
             df["embedding_status"] = "pending"
-            df["updated_at"] = datetime.utcnow().isoformat()
+            df["updated_at"] = datetime.now(UTC).isoformat()
             df["batch_id"] = 0  # Reset batch assignment
             df["error_message"] = ""
 
@@ -886,7 +912,7 @@ class ChunksBackend:
                 where=filter_expr,
                 values={
                     "embedding_status": "error",
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                     "error_message": error[:500],  # Truncate long errors
                 },
             )
@@ -1027,7 +1053,7 @@ class ChunksBackend:
                 where=f"file_path = '{escaped_old}'",
                 values={
                     "file_path": new_path,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                 },
             )
             rows = getattr(result, "rows_updated", 0) if result else 0
@@ -1142,7 +1168,7 @@ class ChunksBackend:
             from datetime import timedelta
 
             # Calculate cutoff time
-            cutoff = datetime.utcnow() - timedelta(minutes=older_than_minutes)
+            cutoff = datetime.now(UTC) - timedelta(minutes=older_than_minutes)
             cutoff_str = cutoff.isoformat()
 
             # OPTIMIZATION: Use LanceDB scanner with filter for processing status
@@ -1170,7 +1196,7 @@ class ChunksBackend:
             # Reset to pending
             stale_df["embedding_status"] = "pending"
             stale_df["embedding_batch_id"] = 0
-            stale_df["updated_at"] = datetime.utcnow().isoformat()
+            stale_df["updated_at"] = datetime.now(UTC).isoformat()
 
             # Delete old and add updated
             ids_str = "', '".join(chunk_ids)
@@ -1260,7 +1286,7 @@ class ChunksBackend:
 
             # Update status fields (only columns that exist in the schema)
             df["embedding_status"] = "pending"
-            df["updated_at"] = datetime.utcnow().isoformat()
+            df["updated_at"] = datetime.now(UTC).isoformat()
             if "embedding_batch_id" in df.columns:
                 df["embedding_batch_id"] = 0  # Reset batch assignment
             if "error_message" in df.columns:
@@ -1296,6 +1322,6 @@ class ChunksBackend:
         await self.initialize()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(self, *_: object) -> None:
         """Async context manager exit."""
         await self.close()

@@ -1,0 +1,8 @@
+{
+  "pythonPath": ".venv/bin/python",
+  "include": [
+    "src",
+    "tests"
+  ],
+  "pythonVersion": "3.11"
+}
