@@ -118,7 +118,14 @@ def cleanup_stale_mcp_servers(platform_info: PlatformInfo) -> list[str]:
         installer = MCPInstaller(platform=platform_info.platform)
 
         # Get all configured servers for this platform
-        all_servers = installer.list_servers()
+        try:
+            all_servers = installer.list_servers()
+        except NotImplementedError:
+            logger.debug(
+                f"list_servers not supported for {platform_info.platform.value} "
+                "with NativeCLI strategy - skipping stale server cleanup"
+            )
+            return []
 
         for server in all_servers:
             server_name = server.name
