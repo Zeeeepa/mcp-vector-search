@@ -25,6 +25,7 @@ from ...analysis.storage.trend_tracker import TrendData, TrendDirection, TrendTr
 from ...core.exceptions import ProjectNotFoundError
 from ...core.git import GitError, GitManager, GitNotAvailableError, GitNotRepoError
 from ...core.project import ProjectManager
+from ...core.test_analyzer import TestAnalyzer
 from ...parsers.registry import ParserRegistry
 from ..output import console, print_error, print_info, print_json
 
@@ -2935,8 +2936,6 @@ def analyze_tests_cmd(
       - Optional pytest fixture-to-tests consumer map (--include-fixture-map)
     """
     import json as _json
-
-    from ...core.test_analyzer import TestAnalyzer
 
     target = (path or Path.cwd()).resolve()
     if not target.exists():

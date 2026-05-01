@@ -21,6 +21,7 @@ from ..analysis import (
 from ..analysis.collectors.coupling import build_import_graph
 from ..analysis.interpretation import AnalysisInterpreter, LLMContextExport
 from ..config.thresholds import ThresholdConfig
+from ..core.test_analyzer import TestAnalyzer
 from ..parsers.registry import ParserRegistry
 
 
@@ -439,8 +440,6 @@ class AnalysisHandlers:
         Returns:
             CallToolResult with JSON-encoded TestAnalysisResult.
         """
-        from ..core.test_analyzer import TestAnalyzer
-
         path_arg = args.get("path")
         if path_arg:
             path = Path(path_arg)

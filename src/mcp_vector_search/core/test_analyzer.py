@@ -321,7 +321,7 @@ class TestAnalyzer:
     def _detect_anti_patterns(
         self,
         fp: Path,
-        tree: ast.Module,
+        _tree: ast.Module,
         test_funcs: list[ast.FunctionDef | ast.AsyncFunctionDef],
     ) -> list[AntiPattern]:
         out: list[AntiPattern] = []
