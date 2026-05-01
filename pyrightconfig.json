@@ -1,8 +1,11 @@
 {
+  "venvPath": ".",
+  "venv": ".venv",
   "pythonPath": ".venv/bin/python",
+  "pythonVersion": "3.11",
   "include": [
     "src",
     "tests"
   ],
-  "pythonVersion": "3.11"
+  "reportMissingImports": "warning"
 }

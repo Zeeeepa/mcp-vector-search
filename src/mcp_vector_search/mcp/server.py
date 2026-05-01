@@ -332,6 +332,16 @@ class MCPVectorSearchServer:
             ):
                 raise RuntimeError("Server not initialized — call initialize() first")
 
+            # Type narrowing for static analyzers (the all() check above guarantees these are non-None)
+            assert self._search_handlers is not None  # noqa: S101  # nosec B101
+            assert self._hybrid_search_handlers is not None  # noqa: S101  # nosec B101
+            assert self._project_handlers is not None  # noqa: S101  # nosec B101
+            assert self._analysis_handlers is not None  # noqa: S101  # nosec B101
+            assert self._wiki_handlers is not None  # noqa: S101  # nosec B101
+            assert self._kg_handlers is not None  # noqa: S101  # nosec B101
+            assert self._story_handlers is not None  # noqa: S101  # nosec B101
+            assert self._review_handlers is not None  # noqa: S101  # nosec B101
+
             # Delegate to search handlers
             if tool_name == "search_code":
                 return await self._search_handlers.handle_search_code(args)

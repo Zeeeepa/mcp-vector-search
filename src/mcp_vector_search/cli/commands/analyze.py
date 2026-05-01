@@ -299,17 +299,17 @@ def complexity_analysis(
         else:
             console.print(f"\n[bold]Available Baselines[/bold] ({len(baselines)})")
             console.print("━" * 80)
-            for baseline in baselines:
-                console.print(f"\n[cyan]• {baseline.baseline_name}[/cyan]")
-                console.print(f"  Created: {baseline.created_at}")
-                console.print(f"  Project: {baseline.project_path}")
+            for baseline_meta in baselines:
+                console.print(f"\n[cyan]• {baseline_meta.baseline_name}[/cyan]")
+                console.print(f"  Created: {baseline_meta.created_at}")
+                console.print(f"  Project: {baseline_meta.project_path}")
                 console.print(
-                    f"  Files: {baseline.file_count} | Functions: {baseline.function_count}"
+                    f"  Files: {baseline_meta.file_count} | Functions: {baseline_meta.function_count}"
                 )
-                console.print(f"  Tool Version: {baseline.tool_version}")
-                if baseline.git_info.commit:
+                console.print(f"  Tool Version: {baseline_meta.tool_version}")
+                if baseline_meta.git_info.commit:
                     console.print(
-                        f"  Git: {baseline.git_info.branch or 'detached'} @ {baseline.git_info.commit[:8]}"
+                        f"  Git: {baseline_meta.git_info.branch or 'detached'} @ {baseline_meta.git_info.commit[:8]}"
                     )
             console.print()
         raise typer.Exit(0)
@@ -326,8 +326,8 @@ def complexity_analysis(
             print_error(str(e))
             console.print("\nAvailable baselines:")
             baselines = baseline_manager.list_baselines()
-            for baseline in baselines[:5]:
-                console.print(f"  • {baseline.baseline_name}")
+            for baseline_meta in baselines[:5]:
+                console.print(f"  • {baseline_meta.baseline_name}")
             raise typer.Exit(1)
 
     try:

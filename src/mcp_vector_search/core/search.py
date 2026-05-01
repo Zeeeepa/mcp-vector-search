@@ -676,12 +676,9 @@ class SemanticSearchEngine:
 
         # Load the embedding model by triggering a dummy query embedding
         try:
-            if hasattr(self.database, "_embedding_function"):
-                embedding_func = self.database._embedding_function
-            elif hasattr(self.database, "embedding_function"):
-                embedding_func = self.database.embedding_function
-            else:
-                embedding_func = None
+            embedding_func = getattr(
+                self.database, "_embedding_function", None
+            ) or getattr(self.database, "embedding_function", None)
 
             if embedding_func is not None:
                 # Trigger model load with a short dummy query
@@ -857,9 +854,8 @@ class SemanticSearchEngine:
         """
         try:
             # Detect index path from database persist_directory
-            if hasattr(self.database, "persist_directory"):
-                index_path = self.database.persist_directory
-
+            index_path = getattr(self.database, "persist_directory", None)
+            if index_path is not None:
                 # Handle both old (config.index_path) and new (config.index_path/lance) paths
                 # Check if index_path already ends with "lance"
                 if index_path.name == "lance":
@@ -994,16 +990,17 @@ class SemanticSearchEngine:
         """
         try:
             # Initialize vectors_backend if needed
+            if self._vectors_backend is None:
+                raise SearchError("Vectors backend is not initialized")
             if self._vectors_backend._db is None:
                 await self._vectors_backend.initialize()
 
             # Generate query embedding
             # Extract embedding function from database (ChromaDB wrapper)
-            if hasattr(self.database, "_embedding_function"):
-                embedding_func = self.database._embedding_function
-            elif hasattr(self.database, "embedding_function"):
-                embedding_func = self.database.embedding_function
-            else:
+            embedding_func = getattr(
+                self.database, "_embedding_function", None
+            ) or getattr(self.database, "embedding_function", None)
+            if embedding_func is None:
                 raise SearchError(
                     "Cannot access embedding function from database for vector search"
                 )
@@ -1243,9 +1240,8 @@ class SemanticSearchEngine:
         """
         try:
             # Detect lance path from database persist_directory
-            if hasattr(self.database, "persist_directory"):
-                index_path = self.database.persist_directory
-
+            index_path = getattr(self.database, "persist_directory", None)
+            if index_path is not None:
                 # Handle both old and new path formats
                 if index_path.name == "lance":
                     lance_path = index_path
@@ -1379,11 +1375,10 @@ class SemanticSearchEngine:
         candidate_results = results[:retrieval_limit]
 
         # Get query embedding (generate from query string)
-        if hasattr(self.database, "_embedding_function"):
-            embedding_func = self.database._embedding_function
-        elif hasattr(self.database, "embedding_function"):
-            embedding_func = self.database.embedding_function
-        else:
+        embedding_func = getattr(self.database, "_embedding_function", None) or getattr(
+            self.database, "embedding_function", None
+        )
+        if embedding_func is None:
             logger.warning("Cannot access embedding function, skipping MMR")
             return results[:requested_limit]
 
@@ -1405,6 +1400,9 @@ class SemanticSearchEngine:
             chunk_ids.append(chunk_id)
 
         # Retrieve embeddings from vectors backend
+        if self._vectors_backend is None:
+            logger.warning("Vectors backend not available, skipping MMR")
+            return results[:requested_limit]
         chunk_vectors = await self._vectors_backend.get_chunk_vectors_batch(chunk_ids)
 
         # Filter results to only those with embeddings available
@@ -1469,8 +1467,8 @@ class SemanticSearchEngine:
         """
         try:
             # Detect BM25 index path from database persist_directory
-            if hasattr(self.database, "persist_directory"):
-                index_path = self.database.persist_directory
+            index_path = getattr(self.database, "persist_directory", None)
+            if index_path is not None:
                 bm25_path = index_path / "bm25_index.pkl"
 
                 if bm25_path.exists():
@@ -1510,11 +1508,10 @@ class SemanticSearchEngine:
         try:
             # Directly open LanceDB vectors.lance table
             # This avoids complex async initialization of VectorsBackend
-            if not hasattr(self.database, "persist_directory"):
+            index_path = getattr(self.database, "persist_directory", None)
+            if index_path is None:
                 logger.debug("Database has no persist_directory")
                 return False
-
-            index_path = self.database.persist_directory
 
             # Handle both old (index_path) and new (index_path/lance) paths
             if index_path.name == "lance":
@@ -1620,15 +1617,19 @@ class SemanticSearchEngine:
             # Import unconditionally so Pyright knows it's always bound when used.
             from mcp_vector_search.core.test_detection import is_test_path
 
+            if self._vectors_backend._table is None:
+                raise SearchError(
+                    "Vectors backend table not initialized for metadata lookup"
+                )
+            vectors_table = self._vectors_backend._table
+
             for chunk_id, bm25_score in bm25_results:
                 if len(search_results) >= limit:
                     break
                 # Query vectors table for chunk metadata
                 try:
                     # Use chunk_id to fetch metadata
-                    df = self._vectors_backend._table.to_pandas().query(
-                        f"chunk_id == '{chunk_id}'"
-                    )
+                    df = vectors_table.to_pandas().query(f"chunk_id == '{chunk_id}'")
                     if df.empty:
                         continue
 

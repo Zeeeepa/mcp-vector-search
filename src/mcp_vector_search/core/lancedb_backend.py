@@ -604,6 +604,10 @@ class LanceVectorDatabase:
                     raise
 
             # Convert chunks to LanceDB records
+            if embeddings is None:
+                raise RuntimeError(
+                    "Embeddings are not available; cannot build LanceDB records"
+                )
             records = []
             for chunk, embedding in zip(chunks, embeddings, strict=True):
                 # Build metadata dict (same as ChromaDB)

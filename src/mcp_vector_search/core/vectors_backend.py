@@ -570,6 +570,8 @@ class VectorsBackend:
 
             # Convert to PyArrow Table with explicit schema to avoid type inference issues
             # This ensures vectors are treated as fixed-size lists, not variable-length lists
+            if self.vector_dim is None:
+                raise ValueError("vector_dim is not initialized; cannot create schema")
             schema = _create_vectors_schema(self.vector_dim)
 
             # Convert normalized vectors to PyArrow Table with explicit schema

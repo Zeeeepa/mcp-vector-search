@@ -498,6 +498,7 @@ class AnalysisHandlers:
                 isError=True,
             )
 
+        output_file: Path | None = None
         try:
             # Determine output directory and filename
             if output_path:
