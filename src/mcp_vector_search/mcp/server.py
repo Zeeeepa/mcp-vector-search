@@ -11,6 +11,7 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
     CallToolRequest,
+    CallToolRequestParams,
     CallToolResult,
     ServerCapabilities,
     TextContent,
@@ -461,21 +462,18 @@ def create_mcp_server(
     @server.call_tool()
     async def handle_call_tool(name: str, arguments: dict | None):
         """Handle tool calls."""
-        # Create a mock request object for compatibility
-        from types import SimpleNamespace
+        # Build a proper CallToolRequest from the decorator-unpacked arguments
+        call_request = CallToolRequest(
+            params=CallToolRequestParams(name=name, arguments=arguments or {})
+        )
 
-        mock_request = SimpleNamespace()
-        mock_request.params = SimpleNamespace()
-        mock_request.params.name = name
-        mock_request.params.arguments = arguments or {}
-
-        result = await mcp_server.call_tool(mock_request)
+        result = await mcp_server.call_tool(call_request)
 
         # Return the content from the result
         return result.content
 
-    # Store reference for cleanup
-    server._mcp_server = mcp_server
+    # Store reference for cleanup (dynamic attribute on MCP Server, unknown to type checker)
+    server._mcp_server = mcp_server  # type: ignore[reportAttributeAccessIssue]
 
     return server
 
@@ -511,7 +509,7 @@ async def run_mcp_server(
         # Cleanup
         if hasattr(server, "_mcp_server"):
             logger.info("Performing server cleanup...")
-            await server._mcp_server.cleanup()
+            await server._mcp_server.cleanup()  # type: ignore[reportAttributeAccessIssue]
 
 
 if __name__ == "__main__":
