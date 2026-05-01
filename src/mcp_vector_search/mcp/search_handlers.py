@@ -43,6 +43,7 @@ class SearchHandlers:
         use_rerank = args.get("use_rerank", True)
         rerank_top_n = args.get("rerank_top_n", 50)
         include_git_blame = args.get("include_git_blame", False)
+        tests_only = args.get("tests_only", False)
 
         if not query:
             return CallToolResult(
@@ -140,6 +141,7 @@ class SearchHandlers:
             rerank_top_n=rerank_top_n,
             search_mode=search_mode,
             hybrid_alpha=hybrid_alpha,
+            tests_only=tests_only,
         )
 
         # Enrich with git blame if requested
@@ -167,6 +169,7 @@ class SearchHandlers:
         similarity_threshold = args.get("similarity_threshold", 0.3)
         search_mode = args.get("search_mode", "hybrid")
         hybrid_alpha = float(args.get("hybrid_alpha", 0.7))
+        tests_only = args.get("tests_only", False)
 
         if not file_path:
             return CallToolResult(
@@ -206,6 +209,7 @@ class SearchHandlers:
                 similarity_threshold=similarity_threshold,
                 search_mode=search_mode_enum,
                 hybrid_alpha=hybrid_alpha,
+                tests_only=tests_only,
             )
 
             # Format results
@@ -245,6 +249,7 @@ class SearchHandlers:
         limit = args.get("limit", 10)
         search_mode = args.get("search_mode", "hybrid")
         hybrid_alpha = float(args.get("hybrid_alpha", 0.7))
+        tests_only = args.get("tests_only", False)
 
         if not description:
             return CallToolResult(
@@ -270,6 +275,7 @@ class SearchHandlers:
                 limit=limit,
                 search_mode=search_mode_enum,
                 hybrid_alpha=hybrid_alpha,
+                tests_only=tests_only,
             )
 
             # Format results

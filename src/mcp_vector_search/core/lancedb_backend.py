@@ -712,6 +712,7 @@ class LanceVectorDatabase:
         limit: int = 10,
         filters: dict[str, Any] | None = None,
         similarity_threshold: float = 0.7,
+        where_extra: str | None = None,
     ) -> list[SearchResult]:
         """Search for similar code chunks with LRU caching.
 
@@ -720,6 +721,10 @@ class LanceVectorDatabase:
             limit: Maximum number of results
             filters: Optional metadata filters (file_path, language, chunk_type, etc.)
             similarity_threshold: Minimum similarity score (0.0 to 1.0)
+            where_extra: Optional raw SQL WHERE fragment appended (AND'ed) to the
+                generated ``filters`` clause. Useful for advanced predicates that
+                cannot be expressed with the simple key/value filter API
+                (e.g. test-only filtering with ``LIKE`` patterns).
 
         Returns:
             List of search results sorted by similarity
@@ -732,8 +737,14 @@ class LanceVectorDatabase:
             return []
 
         # Check cache
+        # Include where_extra in cache key so test-only and full-corpus
+        # searches don't collide.
+        cache_filters = filters
+        if where_extra:
+            cache_filters = dict(filters or {})
+            cache_filters["__where_extra__"] = where_extra
         cache_key = self._generate_search_cache_key(
-            query, limit, filters, similarity_threshold
+            query, limit, cache_filters, similarity_threshold
         )
         if cache_key in self._search_cache:
             # LRU update
@@ -760,8 +771,8 @@ class LanceVectorDatabase:
             )
 
             # Apply metadata filters if provided
+            filter_clauses: list[str] = []
             if filters:
-                filter_clauses = []
                 for key, value in filters.items():
                     if value is not None:
                         # Handle different filter types
@@ -774,9 +785,13 @@ class LanceVectorDatabase:
                         else:
                             filter_clauses.append(f"{key} = {value}")
 
-                if filter_clauses:
-                    where_clause = " AND ".join(filter_clauses)
-                    search = search.where(where_clause)
+            # Append raw WHERE fragment if provided (e.g. test-only filter)
+            if where_extra:
+                filter_clauses.append(where_extra)
+
+            if filter_clauses:
+                where_clause = " AND ".join(filter_clauses)
+                search = search.where(where_clause)
 
             # Execute search
             results = search.to_list()

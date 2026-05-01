@@ -242,6 +242,12 @@ def search_main(
         max=1.0,
         rich_help_panel="🎯 Search Options",
     ),
+    tests_only: bool = typer.Option(
+        False,
+        "--tests-only",
+        help="Restrict results to test files only (test_*.py, *_test.py, tests/, *.spec.ts, etc.)",
+        rich_help_panel="🎯 Search Options",
+    ),
 ) -> None:
     """🔍 Search your codebase semantically.
 
@@ -311,7 +317,7 @@ def search_main(
             return
 
     try:
-        project_root = project_root or ctx.obj.get("project_root") or Path.cwd()
+        resolved_root: Path = project_root or ctx.obj.get("project_root") or Path.cwd()
 
         # Validate mutually exclusive options
         if similar and context:
@@ -328,7 +334,7 @@ def search_main(
 
             asyncio.run(
                 run_similar_search(
-                    project_root=project_root,
+                    project_root=resolved_root,
                     file_path=file_path,
                     function_name=function_name,
                     limit=limit,
@@ -336,6 +342,7 @@ def search_main(
                     json_output=json_output,
                     search_mode=search_mode,
                     hybrid_alpha=hybrid_alpha,
+                    tests_only=tests_only,
                 )
             )
         elif context:
@@ -346,20 +353,21 @@ def search_main(
 
             asyncio.run(
                 run_context_search(
-                    project_root=project_root,
+                    project_root=resolved_root,
                     description=query,
                     focus_areas=focus_areas,
                     limit=limit,
                     json_output=json_output,
                     search_mode=search_mode,
                     hybrid_alpha=hybrid_alpha,
+                    tests_only=tests_only,
                 )
             )
         else:
             # Default semantic search
             asyncio.run(
                 run_search(
-                    project_root=project_root,
+                    project_root=resolved_root,
                     query=query,
                     limit=limit,
                     files=files,
@@ -385,6 +393,7 @@ def search_main(
                     search_mode=search_mode,
                     hybrid_alpha=hybrid_alpha,
                     git_blame=git_blame,
+                    tests_only=tests_only,
                 )
             )
 
@@ -532,6 +541,7 @@ async def run_search(
     search_mode: str = "hybrid",
     hybrid_alpha: float = 0.7,
     git_blame: bool = False,
+    tests_only: bool = False,
 ) -> None:
     """Run semantic search with optional quality filters and quality-aware ranking."""
     # Load project configuration
@@ -591,6 +601,7 @@ async def run_search(
                 rerank_top_n=rerank_top_n,
                 search_mode=mode,
                 hybrid_alpha=hybrid_alpha,
+                tests_only=tests_only,
             )
 
             # Post-filter results by file pattern if specified
@@ -844,6 +855,11 @@ def search_similar_cmd(
         "--json",
         help="Output results in JSON format",
     ),
+    tests_only: bool = typer.Option(
+        False,
+        "--tests-only",
+        help="Restrict results to test files only",
+    ),
 ) -> None:
     """Find code similar to a specific file or function.
 
@@ -852,16 +868,17 @@ def search_similar_cmd(
         mcp-vector-search search similar src/utils.py --function validate_email
     """
     try:
-        project_root = project_root or ctx.obj.get("project_root") or Path.cwd()
+        resolved_root: Path = project_root or ctx.obj.get("project_root") or Path.cwd()
 
         asyncio.run(
             run_similar_search(
-                project_root=project_root,
+                project_root=resolved_root,
                 file_path=file_path,
                 function_name=function_name,
                 limit=limit,
                 similarity_threshold=similarity_threshold,
                 json_output=json_output,
+                tests_only=tests_only,
             )
         )
 
@@ -880,6 +897,7 @@ async def run_similar_search(
     json_output: bool = False,
     search_mode: str = "hybrid",
     hybrid_alpha: float = 0.7,
+    tests_only: bool = False,
 ) -> None:
     """Run similar code search."""
     project_manager = ProjectManager(project_root)
@@ -911,6 +929,7 @@ async def run_similar_search(
             similarity_threshold=similarity_threshold,
             search_mode=mode,
             hybrid_alpha=hybrid_alpha,
+            tests_only=tests_only,
         )
 
         if json_output:
@@ -961,6 +980,11 @@ def search_context_cmd(
         "--json",
         help="Output results in JSON format",
     ),
+    tests_only: bool = typer.Option(
+        False,
+        "--tests-only",
+        help="Restrict results to test files only",
+    ),
 ) -> None:
     """Search for code based on contextual description.
 
@@ -969,7 +993,7 @@ def search_context_cmd(
         mcp-vector-search search context "user authentication" --focus security,middleware
     """
     try:
-        project_root = project_root or ctx.obj.get("project_root") or Path.cwd()
+        resolved_root: Path = project_root or ctx.obj.get("project_root") or Path.cwd()
 
         focus_areas = None
         if focus:
@@ -977,11 +1001,12 @@ def search_context_cmd(
 
         asyncio.run(
             run_context_search(
-                project_root=project_root,
+                project_root=resolved_root,
                 description=description,
                 focus_areas=focus_areas,
                 limit=limit,
                 json_output=json_output,
+                tests_only=tests_only,
             )
         )
 
@@ -999,6 +1024,7 @@ async def run_context_search(
     json_output: bool = False,
     search_mode: str = "hybrid",
     hybrid_alpha: float = 0.7,
+    tests_only: bool = False,
 ) -> None:
     """Run contextual search."""
     project_manager = ProjectManager(project_root)
@@ -1029,6 +1055,7 @@ async def run_context_search(
             limit=limit,
             search_mode=mode,
             hybrid_alpha=hybrid_alpha,
+            tests_only=tests_only,
         )
 
         if json_output:

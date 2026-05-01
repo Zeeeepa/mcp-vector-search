@@ -133,6 +133,11 @@ def _get_search_code_schema() -> Tool:
                     "minimum": 0.0,
                     "maximum": 1.0,
                 },
+                "tests_only": {
+                    "type": "boolean",
+                    "description": "When true, restrict results to test files only (test_*.py, *_test.py, tests/ directories, *.spec.ts, etc.)",
+                    "default": False,
+                },
             },
             "required": ["query"],
         },
@@ -182,6 +187,11 @@ def _get_search_similar_schema() -> Tool:
                     "minimum": 0.0,
                     "maximum": 1.0,
                 },
+                "tests_only": {
+                    "type": "boolean",
+                    "description": "When true, restrict results to test files only (test_*.py, *_test.py, tests/ directories, *.spec.ts, etc.)",
+                    "default": False,
+                },
             },
             "required": ["file_path"],
         },
@@ -224,6 +234,11 @@ def _get_search_context_schema() -> Tool:
                     "default": 0.7,
                     "minimum": 0.0,
                     "maximum": 1.0,
+                },
+                "tests_only": {
+                    "type": "boolean",
+                    "description": "When true, restrict results to test files only (test_*.py, *_test.py, tests/ directories, *.spec.ts, etc.)",
+                    "default": False,
                 },
             },
             "required": ["description"],
@@ -1324,6 +1339,11 @@ def _get_search_hybrid_schema() -> Tool:
                         "been built yet."
                     ),
                     "default": ["semantic", "text", "kg"],
+                },
+                "tests_only": {
+                    "type": "boolean",
+                    "description": "When true, restrict results to test files only (test_*.py, *_test.py, tests/ directories, *.spec.ts, etc.)",
+                    "default": False,
                 },
             },
             "required": ["query"],

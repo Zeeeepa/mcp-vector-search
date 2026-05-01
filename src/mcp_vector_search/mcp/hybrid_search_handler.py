@@ -116,6 +116,7 @@ class HybridSearchHandlers:
             )
 
         limit: int = int(args.get("limit", 10))
+        tests_only: bool = bool(args.get("tests_only", False))
         requested_strategies: list[str] = list(args.get("strategies", _ALL_STRATEGIES))
         # Guard against unknown strategy names.
         active_strategies = [s for s in requested_strategies if s in _ALL_STRATEGIES]
@@ -138,12 +139,12 @@ class HybridSearchHandlers:
         # Run all strategies concurrently; failures are caught per-strategy.
         # ------------------------------------------------------------------
         semantic_task = (
-            self._run_semantic(query, candidate_limit)
+            self._run_semantic(query, candidate_limit, tests_only=tests_only)
             if _STRATEGY_SEMANTIC in active_strategies
             else self._noop()
         )
         text_task = (
-            self._run_text(query, candidate_limit)
+            self._run_text(query, candidate_limit, tests_only=tests_only)
             if _STRATEGY_TEXT in active_strategies
             else self._noop()
         )
@@ -240,7 +241,9 @@ class HybridSearchHandlers:
     # Per-strategy runners
     # ------------------------------------------------------------------
 
-    async def _run_semantic(self, query: str, limit: int) -> list[SearchResult]:
+    async def _run_semantic(
+        self, query: str, limit: int, tests_only: bool = False
+    ) -> list[SearchResult]:
         """Run dense-vector semantic search.
 
         Returns an empty list (not an exception) on failure so the fusion
@@ -254,6 +257,7 @@ class HybridSearchHandlers:
                 use_rerank=False,  # Skip heavy reranking; RRF handles ranking.
                 use_mmr=False,  # Skip MMR; fusion provides diversity.
                 expand=False,  # No query expansion; keep strategy pure.
+                tests_only=tests_only,
             )
             logger.debug(
                 "search_hybrid semantic: %d results for %r", len(results), query
@@ -265,7 +269,9 @@ class HybridSearchHandlers:
             )
             return []
 
-    async def _run_text(self, query: str, limit: int) -> list[SearchResult]:
+    async def _run_text(
+        self, query: str, limit: int, tests_only: bool = False
+    ) -> list[SearchResult]:
         """Run BM25 full-text keyword search.
 
         Returns an empty list (not an exception) on failure so the fusion
@@ -279,6 +285,7 @@ class HybridSearchHandlers:
                 use_rerank=False,
                 use_mmr=False,
                 expand=False,
+                tests_only=tests_only,
             )
             logger.debug(
                 "search_hybrid text/BM25: %d results for %r", len(results), query

@@ -735,6 +735,7 @@ class VectorsBackend:
         query_vector: list[float],
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        where_extra: str | None = None,
     ) -> list[dict[str, Any]]:
         """Semantic vector search.
 
@@ -804,8 +805,8 @@ class VectorsBackend:
             )
 
             # Apply metadata filters if provided
+            filter_clauses: list[str] = []
             if filters:
-                filter_clauses = []
                 for key, value in filters.items():
                     if value is not None:
                         # Handle different filter types
@@ -821,9 +822,13 @@ class VectorsBackend:
                         else:
                             filter_clauses.append(f"{key} = {value}")
 
-                if filter_clauses:
-                    where_clause = " AND ".join(filter_clauses)
-                    search = search.where(where_clause)
+            # Append raw WHERE fragment if provided (e.g. test-only filter)
+            if where_extra:
+                filter_clauses.append(where_extra)
+
+            if filter_clauses:
+                where_clause = " AND ".join(filter_clauses)
+                search = search.where(where_clause)
 
             # Execute search
             results = search.to_list()

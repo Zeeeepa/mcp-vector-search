@@ -142,6 +142,7 @@ class SemanticSearchEngine:
         diversity: float = 0.5,
         timeout: float | None = 30.0,
         use_reranker: bool | None = None,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Perform semantic search for code.
 
@@ -164,6 +165,9 @@ class SemanticSearchEngine:
             timeout: Maximum seconds to wait for search (None = no timeout, default 30.0)
             use_reranker: Whether to apply cross-encoder reranking. Alias for use_rerank.
                          When provided, overrides use_rerank. (default: None)
+            tests_only: When True, restrict results to test files only
+                        (test_*.py, *_test.py, tests/ directories, *.spec.ts, etc.).
+                        Default: False.
 
         Returns:
             List of search results
@@ -193,6 +197,7 @@ class SemanticSearchEngine:
                     rerank_top_n=rerank_top_n,
                     use_mmr=use_mmr,
                     diversity=diversity,
+                    tests_only=tests_only,
                 ),
                 timeout=timeout,
             )
@@ -210,6 +215,7 @@ class SemanticSearchEngine:
             rerank_top_n=rerank_top_n,
             use_mmr=use_mmr,
             diversity=diversity,
+            tests_only=tests_only,
         )
 
     async def _search_internal(
@@ -226,6 +232,7 @@ class SemanticSearchEngine:
         rerank_top_n: int = 50,
         use_mmr: bool = True,
         diversity: float = 0.5,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Internal search implementation (without timeout handling).
 
@@ -302,19 +309,32 @@ class SemanticSearchEngine:
                 if search_mode == SearchMode.BM25:
                     # Pure BM25 search
                     variant_results = await self._search_bm25(
-                        variant_query, retrieval_limit, filters, threshold
+                        variant_query,
+                        retrieval_limit,
+                        filters,
+                        threshold,
+                        tests_only=tests_only,
                     )
                 elif search_mode == SearchMode.HYBRID:
                     # Hybrid search with RRF fusion
                     variant_results = await self._search_hybrid(
-                        variant_query, retrieval_limit, filters, threshold, hybrid_alpha
+                        variant_query,
+                        retrieval_limit,
+                        filters,
+                        threshold,
+                        hybrid_alpha,
+                        tests_only=tests_only,
                     )
                 else:
                     # Pure vector search (default)
                     # Use VectorsBackend if available, otherwise fall back to ChromaDB
                     if self._vectors_backend:
                         variant_results = await self._search_vectors_backend(
-                            variant_query, retrieval_limit, filters, threshold
+                            variant_query,
+                            retrieval_limit,
+                            filters,
+                            threshold,
+                            tests_only=tests_only,
                         )
                     else:
                         # Legacy ChromaDB search
@@ -325,6 +345,15 @@ class SemanticSearchEngine:
                             filters=filters,
                             threshold=threshold,
                         )
+                        # Legacy backend doesn't support where_extra; post-filter.
+                        if tests_only and variant_results:
+                            from mcp_vector_search.core.test_detection import (
+                                is_test_path,
+                            )
+
+                            variant_results = [
+                                r for r in variant_results if is_test_path(r.file_path)
+                            ]
 
                 # Merge results: keep highest score per chunk_id
                 for result in variant_results:
@@ -439,6 +468,7 @@ class SemanticSearchEngine:
         similarity_threshold: float | None = None,
         search_mode: SearchMode = SearchMode.HYBRID,
         hybrid_alpha: float = 0.7,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Find code similar to a specific function or file.
 
@@ -476,6 +506,7 @@ class SemanticSearchEngine:
                 include_context=True,
                 search_mode=search_mode,
                 hybrid_alpha=hybrid_alpha,
+                tests_only=tests_only,
             )
 
         except Exception as e:
@@ -489,6 +520,7 @@ class SemanticSearchEngine:
         limit: int = 10,
         search_mode: SearchMode = SearchMode.HYBRID,
         hybrid_alpha: float = 0.7,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Search for code based on contextual description.
 
@@ -516,6 +548,7 @@ class SemanticSearchEngine:
             include_context=True,
             search_mode=search_mode,
             hybrid_alpha=hybrid_alpha,
+            tests_only=tests_only,
         )
 
     async def search_with_context(
@@ -524,6 +557,7 @@ class SemanticSearchEngine:
         context_files: list[Path] | None = None,
         limit: int = 10,
         similarity_threshold: float | None = None,
+        tests_only: bool = False,
     ) -> dict[str, Any]:
         """Enhanced search with contextual analysis and suggestions.
 
@@ -545,6 +579,7 @@ class SemanticSearchEngine:
             limit=limit,
             similarity_threshold=similarity_threshold,
             include_context=True,
+            tests_only=tests_only,
         )
 
         # Get related query suggestions
@@ -941,6 +976,7 @@ class SemanticSearchEngine:
         limit: int,
         filters: dict[str, Any] | None,
         threshold: float,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Search using VectorsBackend (two-phase architecture).
 
@@ -1022,8 +1058,19 @@ class SemanticSearchEngine:
                 query_vector = embedding_func([query])[0]
 
             # Search vectors backend
+            where_extra: str | None = None
+            if tests_only:
+                from mcp_vector_search.core.test_detection import (
+                    build_test_where_clause,
+                )
+
+                where_extra = build_test_where_clause()
+
             raw_results = await self._vectors_backend.search(
-                query_vector, limit=limit, filters=filters
+                query_vector,
+                limit=limit,
+                filters=filters,
+                where_extra=where_extra,
             )
 
             # Convert to SearchResult format
@@ -1528,6 +1575,7 @@ class SemanticSearchEngine:
         limit: int,
         filters: dict[str, Any] | None,
         threshold: float,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Pure BM25 keyword search.
 
@@ -1549,8 +1597,11 @@ class SemanticSearchEngine:
             )
 
         try:
-            # Get BM25 results (returns list of (chunk_id, score) tuples)
-            bm25_results = self._bm25_backend.search(query, limit=limit * 2)
+            # Get BM25 results (returns list of (chunk_id, score) tuples).
+            # When tests_only is set, over-retrieve more candidates so
+            # the test-only post-filter still leaves enough results.
+            bm25_fetch_limit = limit * 4 if tests_only else limit * 2
+            bm25_results = self._bm25_backend.search(query, limit=bm25_fetch_limit)
 
             if not bm25_results:
                 return []
@@ -1566,7 +1617,12 @@ class SemanticSearchEngine:
 
             # Fetch chunks by chunk_id
             search_results = []
-            for chunk_id, bm25_score in bm25_results[:limit]:
+            # Import unconditionally so Pyright knows it's always bound when used.
+            from mcp_vector_search.core.test_detection import is_test_path
+
+            for chunk_id, bm25_score in bm25_results:
+                if len(search_results) >= limit:
+                    break
                 # Query vectors table for chunk metadata
                 try:
                     # Use chunk_id to fetch metadata
@@ -1577,6 +1633,11 @@ class SemanticSearchEngine:
                         continue
 
                     row = df.iloc[0]
+
+                    # Post-filter: drop non-test chunks when tests_only=True.
+                    # BM25 backend has no SQL WHERE support, so filter here.
+                    if tests_only and not is_test_path(row["file_path"]):
+                        continue
 
                     # Create SearchResult with BM25 score as similarity
                     # Normalize BM25 score to 0-1 range (heuristic: divide by 10, cap at 1.0)
@@ -1617,6 +1678,7 @@ class SemanticSearchEngine:
         filters: dict[str, Any] | None,
         threshold: float,
         hybrid_alpha: float,
+        tests_only: bool = False,
     ) -> list[SearchResult]:
         """Hybrid search using Reciprocal Rank Fusion (RRF) of vector + BM25 results.
 
@@ -1642,22 +1704,27 @@ class SemanticSearchEngine:
             )
             if self._vectors_backend:
                 return await self._search_vectors_backend(
-                    query, limit, filters, threshold
+                    query, limit, filters, threshold, tests_only=tests_only
                 )
             else:
-                return await self._retry_handler.search_with_retry(
+                results = await self._retry_handler.search_with_retry(
                     database=self.database,
                     query=query,
                     limit=limit,
                     filters=filters,
                     threshold=threshold,
                 )
+                if tests_only and results:
+                    from mcp_vector_search.core.test_detection import is_test_path
+
+                    results = [r for r in results if is_test_path(r.file_path)]
+                return results
 
         try:
             # Get vector results
             if self._vectors_backend:
                 vector_results = await self._search_vectors_backend(
-                    query, limit * 2, filters, threshold
+                    query, limit * 2, filters, threshold, tests_only=tests_only
                 )
             else:
                 vector_results = await self._retry_handler.search_with_retry(
@@ -1667,9 +1734,43 @@ class SemanticSearchEngine:
                     filters=filters,
                     threshold=threshold,
                 )
+                if tests_only and vector_results:
+                    from mcp_vector_search.core.test_detection import is_test_path
 
-            # Get BM25 results
-            bm25_results = self._bm25_backend.search(query, limit=limit * 2)
+                    vector_results = [
+                        r for r in vector_results if is_test_path(r.file_path)
+                    ]
+
+            # Get BM25 results.
+            # Over-retrieve when tests_only so post-filter still has signal.
+            bm25_fetch_limit = limit * 4 if tests_only else limit * 2
+            bm25_results = self._bm25_backend.search(query, limit=bm25_fetch_limit)
+
+            # Post-filter BM25 chunk_ids by file_path to drop non-test hits.
+            if tests_only and bm25_results and self._vectors_backend:
+                from mcp_vector_search.core.test_detection import is_test_path
+
+                try:
+                    _tbl = self._vectors_backend._table
+                    if _tbl is None:
+                        raise ValueError("vectors table not initialised")
+                    chunk_ids_in_play = [cid for cid, _ in bm25_results]
+                    df = _tbl.to_pandas()
+                    df_subset = df[df["chunk_id"].isin(chunk_ids_in_play)]
+                    test_chunk_ids = {
+                        str(row["chunk_id"])
+                        for _, row in df_subset.iterrows()
+                        if is_test_path(str(row["file_path"]))
+                    }
+                    bm25_results = [
+                        (cid, score)
+                        for cid, score in bm25_results
+                        if cid in test_chunk_ids
+                    ]
+                except Exception as e:
+                    logger.debug(
+                        f"BM25 tests_only post-filter failed, keeping all: {e}"
+                    )
 
             # Build maps: chunk_id -> rank (1-based)
             vector_ranks = {
