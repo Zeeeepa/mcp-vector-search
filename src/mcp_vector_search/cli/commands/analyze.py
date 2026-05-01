@@ -677,6 +677,9 @@ async def run_analysis(
                 )
                 return
 
+            if output_file is None:
+                typer.echo("Error: --output is required for SARIF format", err=True)
+                raise typer.Exit(1)
             reporter = SARIFReporter()
             reporter.write_sarif(all_smells, output_file, base_path=project_root)
             console.print(f"[green]✓[/green] SARIF report written to: {output_file}")
@@ -1045,12 +1048,16 @@ async def _analyze_file(
             # Cognitive is typically 1.2-1.5x cyclomatic for complex code
             cognitive = int(complexity * 1.3)
 
+            if chunk.end_line is not None and chunk.start_line is not None:
+                lines_of_code = chunk.end_line - chunk.start_line + 1
+            else:
+                lines_of_code = 0
             chunk_metrics = ChunkMetrics(
                 cognitive_complexity=cognitive,
                 cyclomatic_complexity=complexity,
                 max_nesting_depth=0,  # Not available without collectors
                 parameter_count=param_count,
-                lines_of_code=chunk.end_line - chunk.start_line + 1,
+                lines_of_code=lines_of_code,
             )
             file_metrics.chunks.append(chunk_metrics)
 
