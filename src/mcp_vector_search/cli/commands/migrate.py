@@ -10,6 +10,7 @@ from ...migrations import MigrationRunner
 from ...migrations.v1_2_2_codexembed import CodeXEmbedMigration
 from ...migrations.v2_3_0_two_phase import TwoPhaseArchitectureMigration
 from ...migrations.v3_1_0_skill_install import SkillInstallMigration
+from ...migrations.v4_0_0_test_kg_nodes import TestKGNodesMigration
 from .migrate_db import app as migrate_db_app
 
 console = Console()
@@ -38,6 +39,7 @@ def _get_runner(project_root: Path | None = None) -> MigrationRunner:
             CodeXEmbedMigration(),
             TwoPhaseArchitectureMigration(),
             SkillInstallMigration(),
+            TestKGNodesMigration(),
             # Add new migrations here as they are created
         ]
     )

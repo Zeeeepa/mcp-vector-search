@@ -887,6 +887,88 @@ class KnowledgeGraph:
         except Exception as e:
             logger.debug(f"FRAMEWORK_FOR table creation: {e}")
 
+        # Issue #156: Test knowledge graph nodes and relationships
+        # TestSuite node table (one per test file)
+        try:
+            self._conn.execute(
+                """
+                CREATE NODE TABLE IF NOT EXISTS TestSuite (
+                    id STRING PRIMARY KEY,
+                    name STRING,
+                    file_path STRING,
+                    framework STRING,
+                    test_count INT64
+                )
+            """
+            )
+            logger.debug("Created TestSuite node table")
+        except Exception as e:
+            logger.debug(f"TestSuite table creation: {e}")
+
+        # TestCase node table (one per test function/class)
+        try:
+            self._conn.execute(
+                """
+                CREATE NODE TABLE IF NOT EXISTS TestCase (
+                    id STRING PRIMARY KEY,
+                    name STRING,
+                    file_path STRING,
+                    line_start INT64,
+                    line_end INT64,
+                    is_parametrized BOOLEAN,
+                    fixture_deps STRING[]
+                )
+            """
+            )
+            logger.debug("Created TestCase node table")
+        except Exception as e:
+            logger.debug(f"TestCase table creation: {e}")
+
+        # TESTS rel: TestCase -> CodeEntity (the production code under test)
+        try:
+            self._conn.execute(
+                """
+                CREATE REL TABLE IF NOT EXISTS TESTS (
+                    FROM TestCase TO CodeEntity,
+                    MANY_MANY
+                )
+            """
+            )
+            logger.debug("Created TESTS relationship table")
+        except Exception as e:
+            logger.debug(f"TESTS table creation: {e}")
+
+        # BELONGS_TO_SUITE rel: TestCase -> TestSuite
+        # (Note: BELONGS_TO already exists from earlier schema for Branch -> Repository,
+        #  so we use BELONGS_TO_SUITE here to avoid table-name collision while preserving
+        #  intent.)
+        try:
+            self._conn.execute(
+                """
+                CREATE REL TABLE IF NOT EXISTS BELONGS_TO_SUITE (
+                    FROM TestCase TO TestSuite,
+                    MANY_MANY
+                )
+            """
+            )
+            logger.debug("Created BELONGS_TO_SUITE relationship table")
+        except Exception as e:
+            logger.debug(f"BELONGS_TO_SUITE table creation: {e}")
+
+        # USES_FIXTURE rel: TestCase -> CodeEntity (fixture function)
+        try:
+            self._conn.execute(
+                """
+                CREATE REL TABLE IF NOT EXISTS USES_FIXTURE (
+                    FROM TestCase TO CodeEntity,
+                    MANY_MANY
+                )
+            """
+            )
+            logger.debug("Created USES_FIXTURE relationship table")
+        except Exception as e:
+            logger.debug(f"USES_FIXTURE table creation: {e}")
+
     async def add_entity(self, entity: CodeEntity):
         """Add or update a code entity.
 
@@ -4456,6 +4538,24 @@ class KnowledgeGraph:
         code_rel_count = sum(relationships.get(rel, 0) for rel in code_relationships)
         return code_rel_count > 0
 
+    def _count_nodes(self, table: str) -> int:
+        """Count nodes in a given table; returns 0 if table missing or query fails."""
+        try:
+            result = self._conn.execute(f"MATCH (n:{table}) RETURN count(n) AS cnt")
+            return result.get_next()[0] if result.has_next() else 0
+        except Exception:
+            return 0
+
+    def _count_rels(self, table: str) -> int:
+        """Count relationships in a given table; returns 0 on missing table or error."""
+        try:
+            result = self._conn.execute(
+                f"MATCH ()-[r:{table}]->() RETURN count(r) AS cnt"
+            )
+            return result.get_next()[0] if result.has_next() else 0
+        except Exception:
+            return 0
+
     async def get_detailed_stats(self) -> dict[str, Any]:
         """Get detailed knowledge graph statistics with entity type breakdowns.
 
@@ -4549,6 +4649,10 @@ class KnowledgeGraph:
                 framework_result.get_next()[0] if framework_result.has_next() else 0
             )
 
+            # Count test nodes (issue #156)
+            test_suite_count = self._count_nodes("TestSuite")
+            test_case_count = self._count_nodes("TestCase")
+
             # Count relationships by type
             rel_counts = {}
             for rel_type in [
@@ -4572,6 +4676,9 @@ class KnowledgeGraph:
                 "WRITTEN_IN",
                 "USES_FRAMEWORK",
                 "FRAMEWORK_FOR",
+                "TESTS",
+                "BELONGS_TO_SUITE",
+                "USES_FIXTURE",
             ]:
                 try:
                     rel_result = self._conn.execute(
@@ -4593,7 +4700,9 @@ class KnowledgeGraph:
                 + branch_count
                 + commit_count
                 + lang_count
-                + framework_count,
+                + framework_count
+                + test_suite_count
+                + test_case_count,
                 "code_entities": total_entities,
                 "entity_types": entity_types,
                 "doc_sections": doc_count,
@@ -4605,6 +4714,9 @@ class KnowledgeGraph:
                 "commits": commit_count,
                 "languages": lang_count,
                 "frameworks": framework_count,
+                "test_suites": test_suite_count,
+                "test_cases": test_case_count,
+                "tests_edges": rel_counts.get("tests", 0),
                 "relationships": rel_counts,
                 "database_path": str(self.db_path / "code_kg"),
             }
@@ -4623,6 +4735,9 @@ class KnowledgeGraph:
                 "commits": 0,
                 "languages": 0,
                 "frameworks": 0,
+                "test_suites": 0,
+                "test_cases": 0,
+                "tests_edges": 0,
                 "relationships": {},
                 "error": str(e),
             }
@@ -4671,9 +4786,19 @@ class KnowledgeGraph:
             )
             topic_count = topic_result.get_next()[0] if topic_result.has_next() else 0
 
+            # Count test nodes (issue #156)
+            test_suite_count = self._count_nodes("TestSuite")
+            test_case_count = self._count_nodes("TestCase")
+
             # Total entities
             total_entities = (
-                entity_count + doc_count + tag_count + document_count + topic_count
+                entity_count
+                + doc_count
+                + tag_count
+                + document_count
+                + topic_count
+                + test_suite_count
+                + test_case_count
             )
 
             # Get relationship counts
@@ -4693,6 +4818,9 @@ class KnowledgeGraph:
                 "CONTAINS_SECTION",
                 "RELATED_TO",
                 "DESCRIBES",
+                "TESTS",
+                "BELONGS_TO_SUITE",
+                "USES_FIXTURE",
             ]:
                 try:
                     rel_result = self._execute_query(
@@ -4710,6 +4838,9 @@ class KnowledgeGraph:
                 "documents": document_count,
                 "tags": tag_count,
                 "topics": topic_count,
+                "test_suites": test_suite_count,
+                "test_cases": test_case_count,
+                "tests_edges": relationships.get("tests", 0),
                 "relationships": relationships,
                 "database_path": str(self.db_path / "code_kg"),
             }
@@ -4723,6 +4854,9 @@ class KnowledgeGraph:
                 "documents": 0,
                 "tags": 0,
                 "topics": 0,
+                "test_suites": 0,
+                "test_cases": 0,
+                "tests_edges": 0,
                 "relationships": {},
                 "database_path": str(self.db_path / "code_kg"),
             }

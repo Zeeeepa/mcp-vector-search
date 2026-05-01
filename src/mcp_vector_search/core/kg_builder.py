@@ -925,6 +925,22 @@ class KGBuilder:
         # in subprocess mode due to O(n×m) complexity. For 57k docs × 4k entities = 228M comparisons.
         # Use async mode if DOCUMENTS relationships are needed.
 
+        # Issue #156: Build TestSuite/TestCase nodes and test relationships.
+        # Done after CodeEntity insertion so TESTS edges can resolve targets.
+        try:
+            from .test_kg_builder import TestKGBuilder
+
+            test_builder = TestKGBuilder(self.kg, self.project_root)
+            test_stats = test_builder.build(chunks)
+            stats["test_suites"] = test_stats.get("test_suites", 0)
+            stats["test_cases"] = test_stats.get("test_cases", 0)
+            stats["tests_edges"] = test_stats.get("tests_edges", 0)
+            stats["belongs_to_edges"] = test_stats.get("belongs_to_edges", 0)
+            stats["uses_fixture_edges"] = test_stats.get("uses_fixture_edges", 0)
+            logger.info(f"Test KG: {test_stats}")
+        except Exception as e:
+            logger.warning(f"TestKGBuilder failed (non-fatal): {e}")
+
         # Save metadata
         processed_chunk_ids = {c.chunk_id or c.id for c in chunks}
         build_duration = time.time() - start_time
