@@ -421,6 +421,62 @@ class AnalysisHandlers:
                 isError=True,
             )
 
+    async def handle_analyze_tests(self, args: dict[str, Any]) -> CallToolResult:
+        """Handle analyze_tests tool call.
+
+        Performs static analysis of test code: coverage gaps for public
+        production symbols, anti-pattern detection (no_assertion, empty_body,
+        excessive_mocking, test_calls_test), and an optional fixture-to-tests
+        consumer map.
+
+        Args:
+            args: Tool call arguments. Supported keys:
+                - path (str, optional): file or directory to analyze
+                - include_coverage_gaps (bool, default True)
+                - include_pattern_analysis (bool, default True)
+                - include_fixture_map (bool, default False)
+
+        Returns:
+            CallToolResult with JSON-encoded TestAnalysisResult.
+        """
+        from ..core.test_analyzer import TestAnalyzer
+
+        path_arg = args.get("path")
+        if path_arg:
+            path = Path(path_arg)
+            if not path.is_absolute():
+                path = self.project_root / path
+        else:
+            path = self.project_root
+
+        include_coverage_gaps = bool(args.get("include_coverage_gaps", True))
+        include_pattern_analysis = bool(args.get("include_pattern_analysis", True))
+        include_fixture_map = bool(args.get("include_fixture_map", False))
+
+        try:
+            analyzer = TestAnalyzer()
+            result = analyzer.analyze(
+                path,
+                include_coverage_gaps=include_coverage_gaps,
+                include_pattern_analysis=include_pattern_analysis,
+                include_fixture_map=include_fixture_map,
+            )
+            output = {
+                "summary": result.summary,
+                "coverage_gaps": [vars(g) for g in result.coverage_gaps],
+                "anti_patterns": [vars(p) for p in result.anti_patterns],
+                "fixture_map": result.fixture_map,
+            }
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(output, indent=2))]
+            )
+        except Exception as e:
+            logger.error(f"analyze_tests failed: {e}")
+            return CallToolResult(
+                isError=True,
+                content=[TextContent(type="text", text=f"Error analyzing tests: {e}")],
+            )
+
     async def handle_save_report(self, args: dict[str, Any]) -> CallToolResult:
         """Handle save_report tool call.
 

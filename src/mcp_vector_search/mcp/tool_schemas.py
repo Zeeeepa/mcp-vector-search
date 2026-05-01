@@ -23,6 +23,7 @@ def get_tool_schemas() -> list[Tool]:
         _get_complexity_hotspots_schema(),
         _get_circular_dependencies_schema(),
         _get_interpret_analysis_schema(),
+        _get_analyze_tests_schema(),
         _get_save_report_schema(),
         _get_review_repository_schema(),
         _get_review_pull_request_schema(),
@@ -435,6 +436,49 @@ def _get_interpret_analysis_schema() -> Tool:
                 },
             },
             "required": ["analysis_json"],
+        },
+    )
+
+
+def _get_analyze_tests_schema() -> Tool:
+    """Get analyze_tests tool schema."""
+    return Tool(
+        name="analyze_tests",
+        description=(
+            "Analyze test code quality and coverage. Detects public production "
+            "symbols that lack tests (coverage gaps), test anti-patterns "
+            "(no_assertion, empty_body, excessive_mocking, test_calls_test), "
+            "and optionally builds a pytest fixture-to-consumers map. "
+            "Python AST-based; safe to run on any directory."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Optional directory or file to analyze "
+                        "(relative to project root or absolute). Defaults to "
+                        "the project root."
+                    ),
+                },
+                "include_coverage_gaps": {
+                    "type": "boolean",
+                    "description": "Detect public production symbols not referenced by tests",
+                    "default": True,
+                },
+                "include_pattern_analysis": {
+                    "type": "boolean",
+                    "description": "Detect test anti-patterns (assertions, empty bodies, mocking)",
+                    "default": True,
+                },
+                "include_fixture_map": {
+                    "type": "boolean",
+                    "description": "Build pytest fixture-to-tests consumer map",
+                    "default": False,
+                },
+            },
+            "required": [],
         },
     )
 

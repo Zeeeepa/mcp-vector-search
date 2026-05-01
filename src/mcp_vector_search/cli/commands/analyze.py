@@ -2897,5 +2897,100 @@ async def run_batch_review_analysis(
         raise typer.Exit(2)
 
 
+@analyze_app.command(name="tests")
+def analyze_tests_cmd(
+    path: Path | None = typer.Option(
+        None,
+        "--path",
+        "-p",
+        help="Directory or file to analyze (defaults to current directory)",
+        exists=False,
+    ),
+    include_coverage_gaps: bool = typer.Option(
+        True,
+        "--include-coverage-gaps/--no-coverage-gaps",
+        help="Detect public production symbols not referenced by tests",
+    ),
+    include_pattern_analysis: bool = typer.Option(
+        True,
+        "--include-pattern-analysis/--no-pattern-analysis",
+        help="Detect test anti-patterns (assertions, empty bodies, mocking)",
+    ),
+    include_fixture_map: bool = typer.Option(
+        False,
+        "--include-fixture-map",
+        help="Build pytest fixture-to-tests consumer map",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output raw JSON instead of human summary",
+    ),
+) -> None:
+    """Analyze test code quality and coverage gaps.
+
+    Static analyzer that surfaces:
+      - Coverage gaps: public production symbols never referenced from tests
+      - Anti-patterns: no_assertion, empty_body, excessive_mocking, test_calls_test
+      - Optional pytest fixture-to-tests consumer map (--include-fixture-map)
+    """
+    import json as _json
+
+    from ...core.test_analyzer import TestAnalyzer
+
+    target = (path or Path.cwd()).resolve()
+    if not target.exists():
+        print_error(f"Path not found: {target}")
+        raise typer.Exit(1)
+
+    analyzer = TestAnalyzer()
+    result = analyzer.analyze(
+        target,
+        include_coverage_gaps=include_coverage_gaps,
+        include_pattern_analysis=include_pattern_analysis,
+        include_fixture_map=include_fixture_map,
+    )
+
+    if json_output:
+        payload = {
+            "summary": result.summary,
+            "coverage_gaps": [vars(g) for g in result.coverage_gaps],
+            "anti_patterns": [vars(p) for p in result.anti_patterns],
+            "fixture_map": result.fixture_map,
+        }
+        print_json(_json.dumps(payload, indent=2))
+        return
+
+    s = result.summary
+    console.print("[bold blue]Test Analysis Summary[/bold blue]")
+    console.print(f"  Test files:        {s['test_files']}")
+    console.print(f"  Production files:  {s['production_files']}")
+    console.print(f"  Test functions:    {s['test_functions']}")
+    console.print(f"  Public symbols:    {s['public_symbols']}")
+    console.print(f"  Coverage gaps:     {s['coverage_gaps']}")
+    console.print(f"  Anti-patterns:     {s['anti_patterns']}")
+    if include_fixture_map:
+        console.print(f"  Fixtures:          {s['fixtures']}")
+
+    if result.coverage_gaps:
+        console.print("\n[bold yellow]Coverage Gaps[/bold yellow]")
+        for gap in result.coverage_gaps[:25]:
+            console.print(f"  {gap.kind} {gap.symbol}  ({gap.file}:{gap.line})")
+        if len(result.coverage_gaps) > 25:
+            console.print(f"  ... and {len(result.coverage_gaps) - 25} more")
+
+    if result.anti_patterns:
+        console.print("\n[bold red]Anti-Patterns[/bold red]")
+        for ap in result.anti_patterns[:25]:
+            console.print(f"  [{ap.type}] {ap.test}  ({ap.file}:{ap.line}) {ap.detail}")
+        if len(result.anti_patterns) > 25:
+            console.print(f"  ... and {len(result.anti_patterns) - 25} more")
+
+    if include_fixture_map and result.fixture_map:
+        console.print("\n[bold green]Fixture Map[/bold green]")
+        for name, consumers in result.fixture_map.items():
+            console.print(f"  {name}: {len(consumers)} consumer(s)")
+
+
 if __name__ == "__main__":
     analyze_app()
