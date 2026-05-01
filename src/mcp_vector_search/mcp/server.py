@@ -13,10 +13,13 @@ from mcp.types import (
     CallToolRequest,
     CallToolRequestParams,
     CallToolResult,
+    LoggingCapability,
     ServerCapabilities,
     TextContent,
+    ToolsCapability,
 )
 
+from ..config.settings import ProjectConfig
 from ..core.embeddings import create_embedding_function
 from ..core.exceptions import ProjectNotFoundError
 from ..core.factory import create_database
@@ -224,7 +227,7 @@ class MCPVectorSearchServer:
             # Don't block server startup on migration failures
             logger.warning(f"Migration check failed (non-fatal): {e}")
 
-    async def _check_auto_reindex(self, config: object) -> None:
+    async def _check_auto_reindex(self, config: ProjectConfig | None) -> None:
         """Check if a version-triggered reindex is needed and perform it non-fatally.
 
         Called during initialize() after the database is ready.  Creates a
@@ -240,6 +243,8 @@ class MCPVectorSearchServer:
             config: Loaded project configuration.
         """
         try:
+            if self.database is None:
+                return
             indexer = SemanticIndexer(
                 database=self.database,
                 project_root=self.project_root,
@@ -299,7 +304,9 @@ class MCPVectorSearchServer:
 
     def get_capabilities(self) -> ServerCapabilities:
         """Get server capabilities."""
-        return ServerCapabilities(tools={"listChanged": True}, logging={})
+        return ServerCapabilities(
+            tools=ToolsCapability(listChanged=True), logging=LoggingCapability()
+        )
 
     async def call_tool(self, request: CallToolRequest) -> CallToolResult:
         """Handle tool calls by delegating to appropriate handlers.
@@ -494,7 +501,9 @@ async def run_mcp_server(
     init_options = InitializationOptions(
         server_name="mcp-vector-search",
         server_version="0.4.0",
-        capabilities=ServerCapabilities(tools={"listChanged": True}, logging={}),
+        capabilities=ServerCapabilities(
+            tools=ToolsCapability(listChanged=True), logging=LoggingCapability()
+        ),
     )
 
     try:
