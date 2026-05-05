@@ -233,13 +233,18 @@ class KnowledgeGraph:
     - Analyzing import dependencies
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, read_only: bool = False):
         """Initialize Kuzu database.
 
         Args:
             db_path: Path to store Kuzu database files
+            read_only: If True, open the underlying Kuzu database in read-only
+                mode. Multiple read-only handles to the same database can
+                coexist with no exclusive lock contention. Schema creation is
+                skipped because read-only databases cannot be mutated.
         """
         self.db_path = db_path
+        self.read_only = read_only
         self.db = None
         self.conn = None
         self._initialized = False
@@ -262,17 +267,21 @@ class KnowledgeGraph:
         # Kuzu's Rust bindings are not thread-safe
         db_dir = self.db_path / "code_kg"
         with self._kuzu_lock:
-            self.db = kuzu.Database(str(db_dir))
+            self.db = kuzu.Database(str(db_dir), read_only=self.read_only)
             self.conn = kuzu.Connection(self.db)
             logger.debug(
-                f"Kuzu database and connection created in thread {threading.current_thread().name}"
+                f"Kuzu database and connection created in thread {threading.current_thread().name} "
+                f"(read_only={self.read_only})"
             )
 
-            # Create schema directly
-            self._create_schema()
+            # Schema creation is a writing operation — skip in read-only mode.
+            if not self.read_only:
+                self._create_schema()
 
         self._initialized = True
-        logger.info(f"✓ Knowledge graph initialized at {db_dir}")
+        logger.info(
+            f"✓ Knowledge graph initialized at {db_dir} (read_only={self.read_only})"
+        )
 
     async def initialize(self):
         """Initialize Kuzu database with schema."""
@@ -286,17 +295,21 @@ class KnowledgeGraph:
         # Run directly on the main asyncio thread with lock for safety
         db_dir = self.db_path / "code_kg"
         with self._kuzu_lock:
-            self.db = kuzu.Database(str(db_dir))
+            self.db = kuzu.Database(str(db_dir), read_only=self.read_only)
             self.conn = kuzu.Connection(self.db)
             logger.debug(
-                f"Kuzu database and connection created in thread {threading.current_thread().name}"
+                f"Kuzu database and connection created in thread {threading.current_thread().name} "
+                f"(read_only={self.read_only})"
             )
 
-            # Create schema directly
-            self._create_schema()
+            # Schema creation is a writing operation — skip in read-only mode.
+            if not self.read_only:
+                self._create_schema()
 
         self._initialized = True
-        logger.info(f"✓ Knowledge graph initialized at {db_dir}")
+        logger.info(
+            f"✓ Knowledge graph initialized at {db_dir} (read_only={self.read_only})"
+        )
 
     @property
     def _conn(self) -> "kuzu.Connection":

@@ -283,6 +283,15 @@ class MCPVectorSearchServer:
             await self.file_watcher.stop()
             self.file_watcher = None
 
+        # Close the shared read-only Knowledge Graph singleton, if any.
+        # This must happen before tearing down the database so the Kuzu
+        # write lock is fully released for any subsequent CLI invocation.
+        if self._kg_handlers is not None:
+            try:
+                await self._kg_handlers.aclose()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(f"KG handlers cleanup failed: {exc}")
+
         # Cleanup database connection
         if self.database and hasattr(self.database, "__aexit__"):
             await self.database.__aexit__(None, None, None)

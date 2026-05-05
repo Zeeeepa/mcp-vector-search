@@ -406,37 +406,116 @@ class SemanticIndexer:
         This method runs after indexing completes to build the KG without
         blocking search availability. KG enhancement will be available
         once this completes.
+
+        Locking note: Kuzu enforces an exclusive write lock per database
+        path. To avoid blocking concurrent MCP query handlers (which hold
+        a read-only handle to the same KG) for the full build duration,
+        the build runs in an isolated subprocess. The parent process
+        owns LanceDB; the subprocess owns the Kuzu writer. This mirrors
+        the CLI ``mvs kg build`` pattern in
+        ``cli/commands/_kg_subprocess.py``.
         """
         self._kg_build_status = "building"
+        kg_kg_temp_chunks: str | None = None
         try:
-            from .kg_builder import KGBuilder
-            from .knowledge_graph import KnowledgeGraph
-
-            kg_path = self._mcp_dir / "knowledge_graph"
-            kg = KnowledgeGraph(kg_path)
-            await kg.initialize()
-
-            builder = KGBuilder(kg, self.project_root)
+            import asyncio as _asyncio
+            import json as _json
+            import os as _os
+            import shutil as _shutil
+            import subprocess as _subprocess
+            import sys as _sys
+            import tempfile as _tempfile
+            from dataclasses import asdict as _asdict
 
             logger.info(
-                "🔗 Phase 3: Building knowledge graph in background (relationship extraction)..."
+                "🔗 Phase 3: Building knowledge graph in background "
+                "(isolated subprocess)..."
             )
 
-            # Use the same database connection
-            async with self.database:
-                await builder.build_from_database(
-                    self.database,
-                    show_progress=False,  # No progress for background
-                    skip_documents=True,  # Fast mode for background
+            # 1. Dump chunks to a temp file via the existing LanceDB handle.
+            if self.database is None:
+                self._kg_build_status = "error: database not available"
+                logger.error("Background KG build failed: database is None")
+                return
+
+            chunks: list[Any] = []
+            for batch in self.database.iter_chunks_batched(batch_size=5000):
+                chunks.extend(batch)
+
+            if not chunks:
+                self._kg_build_status = "complete"
+                logger.info("✓ Phase 3 skipped: no chunks available for KG build")
+                return
+
+            chunk_dicts = [_asdict(chunk) for chunk in chunks]
+            for chunk_dict in chunk_dicts:
+                if "file_path" in chunk_dict:
+                    chunk_dict["file_path"] = str(chunk_dict["file_path"])
+
+            temp_fd, kg_kg_temp_chunks = _tempfile.mkstemp(
+                suffix=".json", prefix="kg_chunks_"
+            )
+            try:
+                with open(kg_kg_temp_chunks, "w", encoding="utf-8") as f:
+                    _json.dump(chunk_dicts, f, default=str)
+            finally:
+                _os.close(temp_fd)
+
+            # 2. Pick the same Python interpreter as the CLI uses.
+            python_executable = _sys.executable
+            mcp_cmd = _shutil.which("mcp-vector-search")
+            if mcp_cmd:
+                try:
+                    with open(mcp_cmd) as f:
+                        shebang = f.readline().strip()
+                    if shebang.startswith("#!"):
+                        python_executable = shebang[2:].strip()
+                except OSError:
+                    pass  # fall back to sys.executable
+
+            subprocess_script = (
+                Path(__file__).parent.parent / "cli" / "commands" / "_kg_subprocess.py"
+            )
+
+            cmd = [
+                python_executable,
+                str(subprocess_script),
+                str(self.project_root.absolute()),
+                kg_kg_temp_chunks,
+                "--skip-documents",  # fast mode for background
+            ]
+
+            # 3. Run the subprocess off-thread so we don't block the
+            #    asyncio loop for the full build duration.
+            result = await _asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: _subprocess.run(  # nosec B603 - args fully controlled
+                    cmd,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                ),
+            )
+
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or "")[-1000:]
+                raise RuntimeError(
+                    f"KG build subprocess exited with code "
+                    f"{result.returncode}: {stderr_tail}"
                 )
 
-            await kg.close()
             self._kg_build_status = "complete"
             logger.info("✓ Phase 3 complete: Knowledge graph built successfully")
 
         except Exception as e:
             self._kg_build_status = f"error: {e}"
             logger.error(f"Background KG build failed: {e}")
+        finally:
+            if kg_kg_temp_chunks:
+                try:
+                    Path(kg_kg_temp_chunks).unlink(missing_ok=True)
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
     def get_kg_status(self) -> str:
         """Get current KG build status.
