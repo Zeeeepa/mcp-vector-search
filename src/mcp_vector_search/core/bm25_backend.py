@@ -26,6 +26,19 @@ from rank_bm25 import BM25Okapi
 
 from .exceptions import DatabaseError
 
+# BM25 tokenizer version. Bump this constant when the tokenization
+# algorithm changes in a way that invalidates existing on-disk indexes
+# (e.g. different token surface for the same input text). When an index
+# is loaded with a different version stamp, BM25 will be disabled and
+# the user is warned to re-run `mcp-vector-search index`.
+#
+# History:
+#   v1: Initial release - simple `\w+` tokenization.
+#   v2: Three-pass tokenizer that preserves dotted/hyphenated/slashed
+#       compound identifiers (e.g. "getstream.io", "@tanstack/query") as
+#       whole tokens, plus snake_case / camelCase sub-word splitting.
+BM25_TOKENIZER_VERSION = 2
+
 
 class BM25Backend:
     """BM25 keyword search backend for code chunks.
@@ -217,9 +230,13 @@ class BM25Backend:
             path.parent.mkdir(parents=True, exist_ok=True)
 
             # Save index data as dict
+            # tokenizer_version is stamped so we can detect tokenizer changes
+            # on load and force a rebuild when the stored version no longer
+            # matches the current BM25_TOKENIZER_VERSION.
             index_data = {
                 "bm25": self._bm25,
                 "chunk_ids": self._chunk_ids,
+                "tokenizer_version": BM25_TOKENIZER_VERSION,
             }
 
             with open(path, "wb") as f:
@@ -250,13 +267,32 @@ class BM25Backend:
             with open(path, "rb") as f:
                 index_data = pickle.load(f)  # nosec B301 - local BM25 index only
 
+            # Validate tokenizer version. Older indexes (pre-v2) used a
+            # simpler tokenizer that discarded dotted/hyphenated names like
+            # "getstream.io". Loading them with the new tokenizer would
+            # break query/index symmetry and silently degrade results, so
+            # we refuse the index and tell the user to reindex.
+            stored_version = index_data.get("tokenizer_version", 1)
+            if stored_version != BM25_TOKENIZER_VERSION:
+                logger.warning(
+                    f"BM25 index tokenizer version mismatch: "
+                    f"index was built with v{stored_version}, "
+                    f"current tokenizer is v{BM25_TOKENIZER_VERSION}. "
+                    f"BM25 will be disabled until you reindex. "
+                    f"Run 'mcp-vector-search index --force' to rebuild."
+                )
+                self._bm25 = None
+                self._chunk_ids = []
+                return
+
             self._bm25 = index_data["bm25"]
             self._chunk_ids = index_data["chunk_ids"]
             # corpus_texts removed from pickle format; kept for backward compat read, then discarded
             _ = index_data.get("corpus_texts", [])
 
             logger.info(
-                f"Loaded BM25 index from {path} ({len(self._chunk_ids)} chunks)"
+                f"Loaded BM25 index from {path} ({len(self._chunk_ids)} chunks, "
+                f"tokenizer v{stored_version})"
             )
 
         except Exception as e:
@@ -292,6 +328,7 @@ class BM25Backend:
             "built": True,
             "chunk_count": len(self._chunk_ids),
             "avg_doc_length": avg_doc_len,
+            "tokenizer_version": BM25_TOKENIZER_VERSION,
         }
 
     @staticmethod

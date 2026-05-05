@@ -4,8 +4,11 @@ import re
 
 _IDENTIFIER_PATTERNS = [
     re.compile(r"\b[\w-]+\.[\w-]+"),  # dotted: getstream.io, io.sentry
-    re.compile(r"\b[a-z][\w]*[A-Z][\w]*\b"),  # camelCase: StreamApp, getStream
-    re.compile(r"\b@[\w][\w/-]+\b"),  # npm scoped: @tanstack/query
+    # CamelCase / camelCase: an internal lower→upper boundary OR a leading
+    # capital followed by a lowercase chunk and another uppercase chunk.
+    # Matches both "StreamApp" and "getStream" but not plain "Login".
+    re.compile(r"\b(?:[a-z][\w]*[A-Z][\w]*|[A-Z][a-z]+[A-Z][\w]*)\b"),
+    re.compile(r"@[\w][\w/-]+"),  # npm scoped: @tanstack/query (no \b before @)
     re.compile(
         r"\b[\w][\w]*-[\w][\w]*-[\w][\w]*\b"
     ),  # multi-hyphen: react-activity-feed
