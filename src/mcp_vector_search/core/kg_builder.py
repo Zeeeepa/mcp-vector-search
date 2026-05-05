@@ -245,12 +245,41 @@ class KGBuilder:
         if file_hashes is not None:
             metadata["file_hashes"] = file_hashes
 
+        # Compute lca_baseline = 2 * max CONTAINS-tree depth.  Persisting
+        # this at build time means query-time scores remain consistent even
+        # if the freshly-loaded RO graph adds/removes a synthetic root.
+        try:
+            baseline = self._compute_lca_baseline()
+            if baseline is not None:
+                metadata["lca_baseline"] = baseline
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(f"lca_baseline computation skipped: {exc}")
+
         try:
             with open(self._metadata_path, "w") as f:
                 json.dump(metadata, f, indent=2)
             logger.debug(f"Saved KG metadata to {self._metadata_path}")
         except Exception as e:
             logger.warning(f"Failed to save KG metadata: {e}")
+
+    def _compute_lca_baseline(self) -> float | None:
+        """Compute ``2 * max_depth`` of the CONTAINS hierarchy.
+
+        Returns ``None`` if the KG has no CONTAINS edges (e.g. empty build).
+        """
+        try:
+            from .lca_scorer import build_lca_scorer_from_kuzu
+
+            kg_conn = getattr(self.kg, "conn", None)
+            if kg_conn is None:
+                return None
+            scorer = build_lca_scorer_from_kuzu(kg_conn)
+            if scorer.graph.number_of_nodes() <= 1:
+                return None
+            return float(scorer.baseline)
+        except Exception as exc:
+            logger.debug(f"_compute_lca_baseline failed: {exc}")
+            return None
 
     def update_metadata_file_hashes(self, file_hashes: dict[str, str]) -> None:
         """Patch the on-disk kg_metadata.json to store updated file hashes.

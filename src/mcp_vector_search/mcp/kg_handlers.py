@@ -15,6 +15,13 @@ from ..core.factory import create_database
 from ..core.knowledge_graph import KnowledgeGraph
 from ..core.project import ProjectManager
 
+# Weight for the structural (LCA) signal when combining with vector
+# similarity. The LCA score is in [0, 1]; this weight controls how much
+# nudge it provides. 0.15 was chosen empirically: large enough to break
+# vector-similarity ties between structurally-related entities, small
+# enough not to overwhelm a strong vector signal.
+LCA_WEIGHT = 0.15
+
 
 class KGHandlers:
     """MCP handlers for knowledge graph operations.
@@ -554,6 +561,53 @@ class KGHandlers:
             else:
                 results = await kg.find_related(entity, max_hops=2)
 
+            # ------------------------------------------------------------
+            # Contrastive LCA re-ranking
+            # ------------------------------------------------------------
+            # We blend the original Kuzu/vector ordering with a structural
+            # signal: how close each result is to the query anchor in the
+            # CONTAINS hierarchy. This breaks ties between equally-relevant
+            # results in favor of the more structurally-related one.
+            #
+            # If we can't resolve a query anchor (e.g. no entity matches
+            # the text query), we skip LCA scoring gracefully — never fail.
+            lca_baseline_used: float | None = None
+            try:
+                anchor_id = await kg.find_entity_by_name(entity)
+                if anchor_id and results:
+                    scorer = await kg.get_lca_scorer()
+                    lca_baseline_used = scorer.baseline
+                    result_ids = [
+                        r.get("id")
+                        for r in results
+                        if isinstance(r, dict) and r.get("id")
+                    ]
+                    lca_scores = scorer.score_query_vs_results(anchor_id, result_ids)
+
+                    # Treat existing per-result "score" (if any) as the
+                    # vector-similarity component. Default to 1.0 so the
+                    # original ordering is preserved on ties.
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        rid = r.get("id")
+                        lca_score = lca_scores.get(rid, 0.0) if rid else 0.0
+                        vector_score = float(r.get("score", 1.0) or 0.0)
+                        r["lca_score"] = lca_score
+                        r["geometric_resonance"] = lca_score
+                        r["final_score"] = vector_score + LCA_WEIGHT * lca_score
+
+                    # Stable re-sort: ties preserve Kuzu's original order.
+                    results.sort(
+                        key=lambda r: (
+                            r.get("final_score", 0.0) if isinstance(r, dict) else 0.0
+                        ),
+                        reverse=True,
+                    )
+            except Exception as exc:  # pragma: no cover - defensive
+                # Never fail the query because of LCA scoring.
+                logger.debug(f"LCA re-ranking skipped: {exc}")
+
             results = results[:limit]
 
             if not results:
@@ -570,6 +624,8 @@ class KGHandlers:
                     "results": results,
                     "count": len(results),
                 }
+                if lca_baseline_used is not None:
+                    result["lca_baseline"] = lca_baseline_used
 
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(result, indent=2))],

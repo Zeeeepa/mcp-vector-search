@@ -254,6 +254,14 @@ class KnowledgeGraph:
         # but use a lock to prevent any potential concurrent access
         self._kuzu_lock = threading.Lock()
 
+        # Lazy-built Contrastive LCA scorer over the CONTAINS hierarchy.
+        # Set to None on construction and after each ``kg_build`` so that
+        # the next query rebuilds it from the freshly populated graph.
+        # Imported here to avoid a hard dependency in __init__.
+        from .lca_scorer import ContrastiveLCAScorer  # noqa: F401
+
+        self._lca_scorer: ContrastiveLCAScorer | None = None
+
     def initialize_sync(self):
         """Initialize Kuzu database with schema (synchronous, thread-safe version)."""
         if self._initialized:
@@ -5472,6 +5480,83 @@ class KnowledgeGraph:
         )
         return deleted_nodes
 
+    # ------------------------------------------------------------------
+    # Contrastive LCA scoring
+    # ------------------------------------------------------------------
+
+    async def build_lca_scorer(self) -> "ContrastiveLCAScorer":  # type: ignore[name-defined]
+        """Build (or rebuild) the Contrastive LCA scorer from CONTAINS edges.
+
+        Reads the CONTAINS hierarchy out of Kuzu, materializes a
+        ``networkx.DiGraph``, and constructs a ``ContrastiveLCAScorer``.
+        The scorer is cached on the instance and reused by
+        :meth:`get_lca_scorer`.  Callers typically don't need to invoke
+        this directly — it is called lazily on first use and invalidated
+        after each ``kg_build``.
+
+        If a build-time ``lca_baseline`` was stored in ``kg_metadata.json``,
+        it is honored so that scores stay consistent with the value used
+        at build time.
+
+        Returns:
+            The freshly-built ``ContrastiveLCAScorer`` (also stored on
+            ``self._lca_scorer``).
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        from .lca_scorer import build_lca_scorer_from_kuzu
+
+        scorer = build_lca_scorer_from_kuzu(self._conn)
+
+        # If a baseline was persisted at build time, honor it so query-time
+        # scores match what the build-time tree would produce.
+        baseline_override = self._load_lca_baseline_from_metadata()
+        if baseline_override is not None:
+            from .lca_scorer import ContrastiveLCAScorer
+
+            scorer = ContrastiveLCAScorer(
+                scorer.graph,
+                root=scorer.root,
+                baseline=baseline_override,
+            )
+
+        self._lca_scorer = scorer
+        logger.debug(
+            f"LCA scorer built: {scorer.graph.number_of_nodes()} nodes, "
+            f"baseline={scorer.baseline}"
+        )
+        return scorer
+
+    async def get_lca_scorer(self) -> "ContrastiveLCAScorer":  # type: ignore[name-defined]
+        """Return the cached LCA scorer, building it on first call."""
+        if self._lca_scorer is None:
+            await self.build_lca_scorer()
+        assert self._lca_scorer is not None  # noqa: S101  # nosec B101
+        return self._lca_scorer
+
+    def invalidate_lca_scorer(self) -> None:
+        """Invalidate the cached LCA scorer (call after ``kg_build``)."""
+        self._lca_scorer = None
+
+    def _load_lca_baseline_from_metadata(self) -> float | None:
+        """Read ``lca_baseline`` from ``kg_metadata.json`` if present."""
+        metadata_path = self.db_path / "kg_metadata.json"
+        if not metadata_path.exists():
+            return None
+        try:
+            import json as _json
+
+            with open(metadata_path) as fh:
+                data = _json.load(fh)
+            value = data.get("lca_baseline")
+            if value is None:
+                return None
+            return float(value)
+        except Exception as exc:
+            logger.debug(f"Failed to load lca_baseline metadata: {exc}")
+            return None
+
     def close_sync(self):
         """Close database connection (synchronous)."""
         with self._kuzu_lock:
@@ -5480,6 +5565,7 @@ class KnowledgeGraph:
             if self.db:
                 self.db = None
             self._initialized = False
+        self._lca_scorer = None
 
         logger.debug("Knowledge graph connection closed")
 
@@ -5491,5 +5577,6 @@ class KnowledgeGraph:
             if self.db:
                 self.db = None
             self._initialized = False
+        self._lca_scorer = None
 
         logger.debug("Knowledge graph connection closed")
