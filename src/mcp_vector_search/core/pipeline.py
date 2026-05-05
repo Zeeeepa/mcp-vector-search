@@ -18,7 +18,7 @@ from loguru import logger
 
 from .chunk_dict import chunk_to_storage_dict
 from .chunks_backend import ChunksBackend
-from .context_builder import build_contextual_text
+from .context_builder import build_embed_text
 from .database import VectorDatabase
 from .index_cleanup import _detect_filesystem_type
 from .metrics import get_metrics_tracker
@@ -479,7 +479,10 @@ class IndexPipeline:
 
                         try:
                             # Generate embeddings using context-enriched text.
-                            contents = [build_contextual_text(c) for c in emb_batch]
+                            # build_embed_text() prepends [class], [module],
+                            # [imports], docstring, and [calls] tags — Anthropic
+                            # research shows 35–49% reduction in retrieval failures.
+                            contents = [build_embed_text(c) for c in emb_batch]
 
                             # Check memory before expensive embedding
                             is_ok, usage_pct, status = (

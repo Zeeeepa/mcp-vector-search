@@ -28,6 +28,7 @@ from .chunk_dict import chunk_to_storage_dict
 from .chunk_processor import ChunkProcessor
 from .chunking_runner import run_phase1_chunking
 from .chunks_backend import ChunksBackend, compute_file_hash
+from .context_builder import build_embed_text
 from .database import VectorDatabase
 from .directory_index import DirectoryIndex
 from .embedding_runner import run_phase2_embedding
@@ -2110,8 +2111,12 @@ class SemanticIndexer:
 
                 # Phase 2: Generate embeddings and store to vectors.lance
                 if all_chunks:
-                    # Extract content for embedding generation
-                    contents = [chunk.content for chunk in all_chunks]
+                    # Extract context-enriched text for embedding generation.
+                    # build_embed_text() prepends [class], [module], [imports],
+                    # docstring, and [calls] context tags — Anthropic's contextual
+                    # retrieval data shows 35–49% reduction in retrieval failures.
+                    # The stored chunk.content is left untouched.
+                    contents = [build_embed_text(chunk) for chunk in all_chunks]
 
                     # Generate embeddings using database's embedding function
                     # Use __call__() which is the universal interface for all embedding functions
@@ -2248,8 +2253,12 @@ class SemanticIndexer:
 
             # Phase 2: Generate embeddings and store to vectors.lance
             if chunks_with_hierarchy:
-                # Extract content for embedding generation
-                contents = [chunk.content for chunk in chunks_with_hierarchy]
+                # Extract context-enriched text for embedding generation.
+                # build_embed_text() prepends [class], [module], [imports],
+                # docstring, and [calls] context tags — Anthropic's contextual
+                # retrieval data shows 35–49% reduction in retrieval failures.
+                # The stored chunk.content is left untouched.
+                contents = [build_embed_text(chunk) for chunk in chunks_with_hierarchy]
 
                 # Generate embeddings using database's embedding function
                 # Use __call__() which is the universal interface for all embedding functions

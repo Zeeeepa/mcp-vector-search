@@ -128,7 +128,16 @@ async def run_phase2_embedding(
             await chunks_backend.mark_chunks_processing(chunk_ids, batch_id)
 
             try:
-                contents = [c["content"] for c in pending]
+                # Build context-enriched text via build_embed_text(): prepend
+                # [class], [module], [imports], docstring, and [calls] tags
+                # before embedding.  The pending chunks are dicts loaded from
+                # chunks_backend with the metadata fields needed.  The stored
+                # chunk content is left untouched — only the text passed to the
+                # embedder is enriched (35–49% retrieval failure reduction per
+                # Anthropic's contextual retrieval research).
+                from .context_builder import build_embed_text
+
+                contents = [build_embed_text(c) for c in pending]
 
                 # Check memory before expensive embedding operation
                 is_ok, usage_pct, status = memory_monitor.check_memory_limit()

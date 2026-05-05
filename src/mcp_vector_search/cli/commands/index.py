@@ -321,7 +321,12 @@ def main(
     model: str = typer.Option(
         "",
         "--model",
-        help="Embedding model: 'fast' (MiniLM, default), 'code' (GraphCodeBERT), 'precise' (SFR), or full model name (e.g., 'microsoft/graphcodebert-base')",
+        help=(
+            "Embedding model: 'fast' (MiniLM, default), 'code' (GraphCodeBERT), "
+            "'coderank' (nomic-ai/CodeRankEmbed, 768d, 8K context, SOTA on "
+            "CodeSearchNet), 'precise' (SFR), or full model name (e.g., "
+            "'nomic-ai/CodeRankEmbed')"
+        ),
         rich_help_panel="⚡ Performance",
     ),
     debug: bool = typer.Option(
@@ -745,6 +750,10 @@ async def run_indexing(
             "code": "microsoft/graphcodebert-base",
             "graphcodebert": "microsoft/graphcodebert-base",
             "precise": "Salesforce/SFR-Embedding-Code-400M_R",
+            # SOTA code embedding model — 137M params, Apache-2.0, 8K context.
+            # Asymmetric: query prefix is applied automatically at search time.
+            "coderank": "nomic-ai/CodeRankEmbed",
+            "coderankembed": "nomic-ai/CodeRankEmbed",
         }
 
         if model in model_presets:

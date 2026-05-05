@@ -14,6 +14,11 @@ CONNECTION_POOL_TIMEOUT = 30.0  # Connection pool acquisition timeout
 # Chunking Constants
 DEFAULT_CHUNK_SIZE = 50  # Default number of lines per code chunk
 TEXT_CHUNK_SIZE = 30  # Number of lines per text/markdown chunk
+# Sliding-window overlap for line-based text/markdown chunking.  Adjacent
+# chunks share this many lines so that queries matching content near a chunk
+# boundary are still retrievable.  ~13% overlap (4/30 lines) follows the
+# 10–15% recommendation in the chunking-embedding research doc (2026-02-24).
+TEXT_CHUNK_OVERLAP = 4  # Lines of overlap between adjacent text/markdown chunks
 SEARCH_RESULT_LIMIT = 20  # Default number of search results to return
 
 # Threshold Constants

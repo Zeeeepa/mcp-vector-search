@@ -224,6 +224,7 @@ DEFAULT_EMBEDDING_MODELS = {
     "legacy": "sentence-transformers/all-MiniLM-L6-v2",  # Backward compatibility (384 dims)
     # Code-specific models with asymmetric query/document prefixes
     "coderanker": "nomic-ai/CodeRankEmbed",  # SOTA on CodeSearchNet (768 dims, Apache-2.0)
+    "coderank": "nomic-ai/CodeRankEmbed",  # short alias for coderanker
 }
 
 # Model specifications for dimension auto-detection and validation
@@ -310,10 +311,14 @@ MODEL_SPECIFICATIONS = {
         "context_length": 8192,
         "type": "code",
         "description": (
-            "CodeRankEmbed: SOTA code search model (137M params, Apache-2.0). "
-            "Trained on CodeSearchNet across 6 languages. "
-            "Asymmetric: uses query prefix for searches, no prefix for documents."
+            "SOTA code embedding model (137M, Apache-2.0, 8K context). "
+            "Trained on CoRNStack across 6 languages (Python, Java, Ruby, "
+            "PHP, JavaScript, Go).  Asymmetric: query prefix is applied at "
+            "search time only; documents are embedded with raw code text."
         ),
+        # Loader passes trust_remote_code=True universally; this flag is kept
+        # in the spec for documentation / future per-model overrides.
+        "trust_remote_code": True,
         # Asymmetric prefixes: query uses an instruction, documents use no prefix
         "query_prefix": "Represent this query for searching relevant code: ",
         "document_prefix": "",

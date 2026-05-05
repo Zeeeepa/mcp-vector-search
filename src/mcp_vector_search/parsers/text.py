@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from ..config.constants import TEXT_CHUNK_SIZE
+from ..config.constants import TEXT_CHUNK_OVERLAP, TEXT_CHUNK_SIZE
 from ..core.models import CodeChunk
 from .base import BaseParser
 
@@ -121,10 +121,16 @@ class TextParser(BaseParser):
                 chunk.tags = tags
                 chunks.append(chunk)
         else:
-            # Fall back to line-based chunking for non-paragraph text
-            # Use smaller chunks for text files (30 lines instead of 50)
+            # Fall back to line-based chunking for non-paragraph text.
+            # Use a sliding window with TEXT_CHUNK_OVERLAP lines of overlap
+            # between adjacent chunks so that queries hitting content near a
+            # chunk boundary are not missed (~13% overlap by default).
             chunk_size = TEXT_CHUNK_SIZE
-            for i in range(0, len(lines), chunk_size):
+            overlap = max(0, min(TEXT_CHUNK_OVERLAP, chunk_size - 1))
+            stride = chunk_size - overlap
+
+            i = 0
+            while i < len(lines):
                 start_line = i + 1
                 end_line = min(i + chunk_size, len(lines))
 
@@ -140,6 +146,12 @@ class TextParser(BaseParser):
                     )
                     chunk.tags = tags
                     chunks.append(chunk)
+
+                # Stop once the chunk reached end-of-file (the next slide would
+                # only re-emit the same trailing lines).
+                if end_line >= len(lines):
+                    break
+                i += stride
 
         return chunks
 
@@ -345,14 +357,21 @@ class TextParser(BaseParser):
         return chunks
 
     def _chunk_by_lines_sync(self, content: str, file_path: Path) -> list[CodeChunk]:
-        """Fallback to line-based chunking (synchronous)."""
+        """Fallback to line-based chunking with sliding-window overlap (synchronous).
+
+        Adjacent chunks share ``TEXT_CHUNK_OVERLAP`` lines of context so that
+        queries matching content near a chunk boundary are still retrievable.
+        """
         lines = self._split_into_lines(content)
-        chunks = []
+        chunks: list[CodeChunk] = []
 
-        # Simple line-based chunking
+        # Sliding-window line-based chunking
         chunk_size = TEXT_CHUNK_SIZE  # Use TEXT_CHUNK_SIZE as lines per chunk
+        overlap = max(0, min(TEXT_CHUNK_OVERLAP, chunk_size - 1))
+        stride = chunk_size - overlap
 
-        for i in range(0, len(lines), chunk_size):
+        i = 0
+        while i < len(lines):
             start_line = i + 1
             end_line = min(i + chunk_size, len(lines))
 
@@ -367,6 +386,11 @@ class TextParser(BaseParser):
                     chunk_type="text",
                 )
                 chunks.append(chunk)
+
+            # Avoid emitting duplicate trailing chunks once we hit EOF
+            if end_line >= len(lines):
+                break
+            i += stride
 
         return chunks
 

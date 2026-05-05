@@ -25,7 +25,7 @@ import orjson
 import pyarrow as pa
 from loguru import logger
 
-from .context_builder import build_contextual_text
+from .context_builder import build_embed_text
 from .exceptions import (
     DatabaseError,
     DatabaseInitializationError,
@@ -580,11 +580,12 @@ class LanceVectorDatabase:
 
         try:
             # Build context-enriched texts for embedding.
-            # build_contextual_text() prepends file path, language, class/function
-            # context, imports, and docstring to improve retrieval quality by
-            # 35–49%.  The stored chunk.content field is NOT modified — only the
-            # text sent to the embedding model is enriched.
-            embedding_texts = [build_contextual_text(chunk) for chunk in chunks]
+            # build_embed_text() prepends [class], [module], [imports],
+            # docstring, and [calls] context tags before embedding (Anthropic
+            # contextual retrieval research: 35–49% reduction in retrieval
+            # failures).  The stored chunk.content field is NOT modified — only
+            # the text sent to the embedding model is enriched.
+            embedding_texts = [build_embed_text(chunk) for chunk in chunks]
             if embeddings is None:
                 # Run embedding generation in thread pool to avoid blocking event loop
                 # This allows other async operations to proceed during CPU-intensive embedding
@@ -758,8 +759,14 @@ class LanceVectorDatabase:
             return self._search_cache[cache_key]
 
         try:
-            # Generate query embedding
-            query_embedding = self.embedding_function([query])[0]
+            # Generate query embedding.
+            # Use embed_query() so asymmetric models (e.g. nomic-ai/CodeRankEmbed)
+            # get the required query-side instruction prefix applied.  For
+            # symmetric models embed_query() is equivalent to __call__([q])[0].
+            if hasattr(self.embedding_function, "embed_query"):
+                query_embedding = self.embedding_function.embed_query(query)
+            else:
+                query_embedding = self.embedding_function([query])[0]
 
             # Build LanceDB query with cosine metric.
             # nprobes and refine_factor enable two-stage ANN retrieval:

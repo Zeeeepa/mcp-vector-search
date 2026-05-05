@@ -152,3 +152,149 @@ def build_contextual_text(chunk: Any) -> str:
         return f"{header}\n---\n{content}"
 
     return content
+
+
+def build_embed_text(chunk: Any) -> str:
+    """Build context-enriched embedding text using bracket-style tags.
+
+    This is the "Step 3a Immediate" contextual chunking implementation from the
+    chunking-embedding research doc (2026-02-24).  Compared with
+    :func:`build_contextual_text` (which uses a compact pipe-separated header
+    targeted at MiniLM's 256-token budget), :func:`build_embed_text` produces a
+    richer, multi-line bracket-tagged header that is well-suited to long-context
+    code embedding models such as ``nomic-ai/CodeRankEmbed`` (8192-token
+    context).
+
+    Format::
+
+        [class ClassName]
+        [module path.to.module]
+        [imports: a, b, c, d, e]
+        <docstring>
+        [calls: foo, bar, baz]
+        <chunk content>
+
+    Anthropic's contextual retrieval research reports a 35–49% reduction in
+    top-20 retrieval failures from prepending class/file/import context to the
+    text passed to the embedder.  Adding call-graph context further improves
+    cross-reference queries by giving the model a dependency-aware signal.
+
+    Notes on the MiniLM token budget
+    --------------------------------
+    With ``all-MiniLM-L6-v2`` (256-token limit), the bracket-style header still
+    works correctly — longer chunks will simply be truncated.  When the active
+    model is upgraded to CodeRankEmbed (or any other 8K+ context model) the
+    full context will fit and contribute fully to the embedding.
+
+    Args:
+        chunk: Either a :class:`~mcp_vector_search.core.models.CodeChunk`
+            dataclass or a plain ``dict``.  The following fields are consulted
+            (missing/falsy fields are skipped):
+            ``class_name``, ``file_path``, ``imports``, ``docstring``,
+            ``calls``, ``content``.
+
+    Returns:
+        A multi-line string with bracket-tagged context lines followed by the
+        chunk's raw content.  If no metadata is available the original
+        ``content`` is returned unchanged.
+    """
+    # Support both dict and dataclass/object access patterns
+    if isinstance(chunk, dict):
+        class_name = chunk.get("class_name") or ""
+        file_path = chunk.get("file_path") or ""
+        imports_raw = chunk.get("imports") or []
+        docstring = chunk.get("docstring") or ""
+        calls_raw = chunk.get("calls") or []
+        content = chunk.get("content") or ""
+    else:
+        class_name = getattr(chunk, "class_name", "") or ""
+        file_path = str(getattr(chunk, "file_path", "") or "")
+        imports_raw = getattr(chunk, "imports", []) or []
+        docstring = getattr(chunk, "docstring", "") or ""
+        calls_raw = getattr(chunk, "calls", []) or []
+        content = getattr(chunk, "content", "") or ""
+
+    parts: list[str] = []
+
+    # Class context — names the enclosing class for method chunks
+    if class_name:
+        parts.append(f"[class {class_name}]")
+
+    # Module context — derived from the file path; converts slashes to dots
+    # and strips ``.py`` so we get a Python-style dotted module name where
+    # possible.  Non-Python paths are passed through with ``/`` → ``.``.
+    if file_path:
+        fp_str = str(file_path)
+        if fp_str not in (".", "/", ""):
+            module_norm = fp_str.replace("\\", "/").replace("/", ".")
+            if module_norm.endswith(".py"):
+                module_norm = module_norm[:-3]
+            parts.append(f"[module {module_norm}]")
+
+    # Imports — extract source/module names and cap at top 5 to keep header
+    # compact even for files with very long import lists.
+    sources: list[str] = []
+    if isinstance(imports_raw, str):
+        try:
+            decoded = _json.loads(imports_raw)
+            if isinstance(decoded, list):
+                imports_raw = decoded
+            else:
+                imports_raw = []
+        except (ValueError, TypeError):
+            imports_raw = []
+
+    # imports may be a list, set, tuple, or any iterable
+    try:
+        imports_iter = list(imports_raw)
+    except TypeError:
+        imports_iter = []
+
+    for imp in imports_iter:
+        if isinstance(imp, dict):
+            src = imp.get("source", "")
+            if src:
+                sources.append(src)
+        elif isinstance(imp, str):
+            stripped = imp.strip()
+            if stripped.startswith("{"):
+                try:
+                    decoded_imp = _json.loads(stripped)
+                    src = decoded_imp.get("source", "")
+                    if src:
+                        sources.append(src)
+                    continue
+                except (ValueError, TypeError):
+                    pass
+            if stripped:
+                sources.append(stripped)
+
+    if sources:
+        top_imports = ", ".join(sources[:5])
+        parts.append(f"[imports: {top_imports}]")
+
+    # Docstring — included verbatim (truncated to 200 chars to bound header
+    # size).  The docstring is the highest-signal natural-language description
+    # of what the chunk does.
+    if docstring:
+        doc_summary = docstring.strip()
+        if len(doc_summary) > 200:
+            doc_summary = doc_summary[:200].rstrip() + "..."
+        if doc_summary:
+            parts.append(doc_summary)
+
+    # Call-graph context — names of functions/methods invoked by this chunk.
+    # Capped at 5 to keep the header compact.
+    calls_iter: list[str] = []
+    if calls_raw:
+        try:
+            calls_iter = [str(c) for c in calls_raw if c]
+        except TypeError:
+            calls_iter = []
+
+    if calls_iter:
+        calls_preview = ", ".join(calls_iter[:5])
+        parts.append(f"[calls: {calls_preview}]")
+
+    parts.append(content)
+    return "\n".join(parts)
