@@ -711,6 +711,51 @@ class LanceVectorDatabase:
             logger.error(f"Failed to add chunks to LanceDB: {e}")
             raise DocumentAdditionError(f"Failed to add chunks: {e}") from e
 
+    def _has_vector_index(self) -> bool:
+        """Detect whether the table has an ANN vector index.
+
+        Used to gate ``nprobes``/``refine_factor`` application during search —
+        these are only meaningful when an IVF index exists.  Returns False on
+        any error (graceful fallback to brute-force search).
+        """
+        if self._table is None:
+            return False
+        try:
+            indices = self._table.list_indices()
+        except Exception as e:
+            logger.debug(f"list_indices() not available or failed: {e}")
+            return False
+        try:
+            for idx in indices:
+                columns = getattr(idx, "columns", None) or []
+                if "vector" in columns:
+                    return True
+            return False
+        except Exception:
+            return bool(indices)
+
+    @staticmethod
+    def _get_ann_search_params() -> tuple[int, int]:
+        """Read nprobes / refine_factor from env, with sane defaults.
+
+        Environment variables:
+            MCP_VECTOR_SEARCH_NPROBES        (default: 20)
+            MCP_VECTOR_SEARCH_REFINE_FACTOR  (default: 5)
+        """
+        try:
+            nprobes = int(os.environ.get("MCP_VECTOR_SEARCH_NPROBES", "20"))
+            if nprobes < 1:
+                nprobes = 20
+        except ValueError:
+            nprobes = 20
+        try:
+            refine_factor = int(os.environ.get("MCP_VECTOR_SEARCH_REFINE_FACTOR", "5"))
+            if refine_factor < 1:
+                refine_factor = 5
+        except ValueError:
+            refine_factor = 5
+        return nprobes, refine_factor
+
     async def search(
         self,
         query: str,
@@ -770,16 +815,21 @@ class LanceVectorDatabase:
 
             # Build LanceDB query with cosine metric.
             # nprobes and refine_factor enable two-stage ANN retrieval:
-            #   - nprobes=20: scan 20 IVF partitions (higher = better recall, slower)
-            #   - refine_factor=5: re-rank 5x candidates with exact distances
-            # LanceDB silently ignores these when no ANN index exists (brute-force).
-            search = (
-                self._table.search(query_embedding)
-                .metric("cosine")
-                .nprobes(20)
-                .refine_factor(5)
-                .limit(limit)
-            )
+            #   - nprobes:        scan N IVF partitions (higher = better recall, slower)
+            #   - refine_factor:  re-rank Nx candidates with exact distances
+            # Both are only valid when an ANN vector index exists on the table.
+            # We detect index presence and apply them only when applicable,
+            # with a try/except fallback for forward-compat with API changes.
+            search = self._table.search(query_embedding).metric("cosine").limit(limit)
+            if self._has_vector_index():
+                nprobes, refine_factor = self._get_ann_search_params()
+                try:
+                    search = search.nprobes(nprobes).refine_factor(refine_factor)
+                except Exception as ann_err:
+                    logger.debug(
+                        f"Failed to apply nprobes/refine_factor (non-fatal, "
+                        f"falling back to defaults): {ann_err}"
+                    )
 
             # Apply metadata filters if provided
             filter_clauses: list[str] = []

@@ -1646,6 +1646,18 @@ class SemanticIndexer:
             ) = await self._index_with_pipeline(force_reindex)
             # Get files list for directory index updates
             files_to_index = self.file_discovery.find_indexable_files()
+
+            # Build ANN vector index after the full pipeline completes.
+            # Activates IVF_HNSW_PQ approximate nearest-neighbor search for
+            # large datasets; auto-skipped for small ones.  Non-fatal:
+            # search falls back to brute-force on failure.
+            if chunks_embedded > 0:
+                try:
+                    await self.vectors_backend.rebuild_index()
+                except Exception as e:
+                    logger.warning(
+                        f"Vector index rebuild after pipeline failed (non-fatal): {e}"
+                    )
         else:
             # SEQUENTIAL MODE: Traditional two-phase execution
             # Phase 1: Chunk files (if requested)
@@ -1782,6 +1794,19 @@ class SemanticIndexer:
                 chunks_embedded, _ = await self._phase2_embed_chunks(
                     batch_size=self.batch_size
                 )
+
+                # Build ANN vector index after the full embed phase completes.
+                # Activates IVF_HNSW_PQ approximate nearest-neighbor search for
+                # large datasets; auto-skipped for small ones.  Non-fatal:
+                # search falls back to brute-force on failure.
+                if chunks_embedded > 0:
+                    try:
+                        await self.vectors_backend.rebuild_index()
+                    except Exception as e:
+                        logger.warning(
+                            f"Vector index rebuild after sequential embed "
+                            f"failed (non-fatal): {e}"
+                        )
         if phase == "all":
             logger.info(
                 f"✓ Two-phase indexing complete: {indexed_count} files, "

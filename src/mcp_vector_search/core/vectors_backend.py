@@ -795,16 +795,23 @@ class VectorsBackend:
         try:
             # Build LanceDB query with cosine metric.
             # nprobes and refine_factor enable two-stage ANN retrieval:
-            #   - nprobes=20: scan 20 IVF partitions (higher = better recall, slower)
-            #   - refine_factor=5: re-rank 5x candidates with exact distances
-            # LanceDB silently ignores these when no ANN index exists (brute-force).
-            search = (
-                self._table.search(query_vector)
-                .metric("cosine")
-                .nprobes(20)
-                .refine_factor(5)
-                .limit(limit)
-            )
+            #   - nprobes:        scan N IVF partitions (higher = better recall, slower)
+            #   - refine_factor:  re-rank Nx candidates with exact distances
+            # Both are only valid when an ANN vector index exists on the table.
+            # Without an index LanceDB performs brute-force scan and these
+            # tuning knobs are no-ops (or warnings on some versions).  We
+            # detect index presence and apply them only when applicable, with
+            # a try/except fallback for forward-compat with API changes.
+            search = self._table.search(query_vector).metric("cosine").limit(limit)
+            if self._has_vector_index():
+                nprobes, refine_factor = self._get_ann_search_params()
+                try:
+                    search = search.nprobes(nprobes).refine_factor(refine_factor)
+                except Exception as ann_err:
+                    logger.debug(
+                        f"Failed to apply nprobes/refine_factor (non-fatal, "
+                        f"falling back to defaults): {ann_err}"
+                    )
 
             # Apply metadata filters if provided
             filter_clauses: list[str] = []
@@ -1268,14 +1275,71 @@ class VectorsBackend:
                 "avg_vector_norm": 0.0,
             }
 
+    def _has_vector_index(self) -> bool:
+        """Detect whether the table has an ANN vector index.
+
+        Used to gate ``nprobes``/``refine_factor`` application during search —
+        these are only meaningful when an IVF index exists.  Returns False on
+        any error (graceful fallback to brute-force search).
+        """
+        if self._table is None:
+            return False
+        try:
+            indices = self._table.list_indices()
+        except Exception as e:
+            logger.debug(f"list_indices() not available or failed: {e}")
+            return False
+
+        # list_indices() returns an iterable of IndexConfig objects; presence
+        # of any vector-typed index on the 'vector' column is sufficient.
+        try:
+            for idx in indices:
+                # IndexConfig may expose .columns / .index_type / .name
+                columns = getattr(idx, "columns", None) or []
+                if "vector" in columns:
+                    return True
+            return False
+        except Exception:
+            # If we can't introspect, assume an index might exist and let
+            # LanceDB decide — caller wraps the apply in try/except anyway.
+            return bool(indices)
+
+    @staticmethod
+    def _get_ann_search_params() -> tuple[int, int]:
+        """Read nprobes / refine_factor from env, with sane defaults.
+
+        Environment variables:
+            MCP_VECTOR_SEARCH_NPROBES        (default: 20)
+            MCP_VECTOR_SEARCH_REFINE_FACTOR  (default: 5)
+        """
+        import os as _os
+
+        try:
+            nprobes = int(_os.environ.get("MCP_VECTOR_SEARCH_NPROBES", "20"))
+            if nprobes < 1:
+                nprobes = 20
+        except ValueError:
+            nprobes = 20
+        try:
+            refine_factor = int(_os.environ.get("MCP_VECTOR_SEARCH_REFINE_FACTOR", "5"))
+            if refine_factor < 1:
+                refine_factor = 5
+        except ValueError:
+            refine_factor = 5
+        return nprobes, refine_factor
+
     async def rebuild_index(self) -> None:
         """Rebuild the vector index for ANN search.
 
-        Creates an IVF_SQ approximate nearest neighbor index after bulk inserts
-        to enable fast similarity search at scale.  Skipped for small datasets
-        (< 4,096 rows) where brute-force is faster and IVF KMeans produces
+        Creates an IVF_HNSW_PQ approximate nearest neighbor index after bulk
+        inserts to enable fast similarity search at scale.  Skipped for very
+        small datasets where brute-force is faster and IVF KMeans produces
         mostly-empty clusters.  Non-fatal: if index creation fails search
         continues with exact brute-force scan.
+
+        Also builds scalar column indices on common filter columns
+        (``language``, ``chunk_type``, ``file_path``) to accelerate metadata
+        filtered searches.
 
         Note: This is an expensive operation and should not be called after every add.
         """
@@ -1298,6 +1362,9 @@ class VectorsBackend:
                     f"Skipping vector index creation: {row_count:,} rows "
                     f"(< 4,096 minimum for meaningful IVF index)"
                 )
+                # Still attempt scalar indices — they accelerate filter-only
+                # queries and don't require a minimum row count.
+                self._rebuild_scalar_indices()
                 return
 
             # Determine vector dimension from a sample row
@@ -1319,9 +1386,31 @@ class VectorsBackend:
             if num_partitions > max_for_clean_kmeans:
                 num_partitions = max_for_clean_kmeans
 
+            # Minimum-size guard: LanceDB IVF training needs enough vectors per
+            # partition for KMeans to converge meaningfully.  Heuristic from the
+            # ANN research doc: cap partitions so each has roughly ≥10 rows;
+            # if the table is too small even for that, drop to a single
+            # partition (effectively brute-force within a single cell).
+            heuristic_cap = min(256, max(1, row_count // 10))
+            if num_partitions > heuristic_cap:
+                num_partitions = heuristic_cap
+
+            # PQ sub-vectors: dimension-agnostic.  vector_dim must be divisible
+            # by num_sub_vectors; vector_dim // 4 yields 4-element sub-vectors
+            # which is a sane default across 384/768/1024-D models.
+            num_sub_vectors = max(1, vector_dim // 4)
+            # Defensive: if not evenly divisible, fall back to a divisor of dim.
+            if vector_dim % num_sub_vectors != 0:
+                # Find largest divisor of vector_dim that is ≤ vector_dim // 4
+                for candidate in range(num_sub_vectors, 0, -1):
+                    if vector_dim % candidate == 0:
+                        num_sub_vectors = candidate
+                        break
+
             logger.info(
-                f"Creating IVF_SQ vector index: {row_count:,} rows, {vector_dim}d, "
-                f"{num_partitions} partitions (int8 scalar quantization)"
+                f"Creating IVF_HNSW_PQ vector index: {row_count:,} rows, "
+                f"{vector_dim}d, {num_partitions} partitions, "
+                f"{num_sub_vectors} PQ sub-vectors"
             )
 
             # Suppress Rust-level KMeans "empty cluster" warnings from Lance.
@@ -1337,7 +1426,8 @@ class VectorsBackend:
                 self._table.create_index(
                     metric="cosine",
                     num_partitions=num_partitions,
-                    index_type="IVF_SQ",
+                    num_sub_vectors=num_sub_vectors,
+                    index_type="IVF_HNSW_PQ",
                     replace=True,
                 )
             finally:
@@ -1346,6 +1436,10 @@ class VectorsBackend:
                 _os.close(_devnull)
 
             logger.info("Vector index created successfully")
+
+            # Scalar indices accelerate metadata filter clauses
+            # (e.g. WHERE language = 'python') in vector search queries.
+            self._rebuild_scalar_indices()
 
         except Exception as e:
             # Check for corruption and auto-recover
@@ -1358,6 +1452,27 @@ class VectorsBackend:
 
             # Non-fatal — search falls back to brute-force automatically
             logger.warning(f"Vector index creation failed (non-fatal): {e}")
+
+    def _rebuild_scalar_indices(self) -> None:
+        """Create scalar column indices for filter acceleration.
+
+        Scalar indices speed up SQL ``WHERE`` clause evaluation on metadata
+        columns (e.g. ``language = 'python'``) during vector search and bulk
+        operations.  Each index is best-effort: failures (already exists,
+        column missing, etc.) are logged at debug level and never propagated.
+        """
+        if self._table is None:
+            return
+
+        # Columns frequently used in metadata filters
+        scalar_columns = ("language", "chunk_type", "file_path")
+        for column in scalar_columns:
+            try:
+                self._table.create_scalar_index(column)
+                logger.debug(f"Created scalar index on '{column}'")
+            except Exception as e:
+                # Best-effort: index may already exist or column may be missing
+                logger.debug(f"Scalar index on '{column}' not created (non-fatal): {e}")
 
     async def get_unembedded_chunk_ids(self, all_chunk_ids: list[str]) -> list[str]:
         """Find which chunks don't have vectors yet.
