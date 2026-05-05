@@ -804,7 +804,7 @@ class VectorsBackend:
             # a try/except fallback for forward-compat with API changes.
             search = self._table.search(query_vector).metric("cosine").limit(limit)
             if self._has_vector_index():
-                nprobes, refine_factor = self._get_ann_search_params()
+                nprobes, refine_factor = VectorsBackend._get_ann_search_params()
                 try:
                     search = search.nprobes(nprobes).refine_factor(refine_factor)
                 except Exception as ann_err:
