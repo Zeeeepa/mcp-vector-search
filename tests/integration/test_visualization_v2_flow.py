@@ -3,10 +3,19 @@
 Tests end-to-end workflows for hierarchical list-based navigation.
 """
 
+import pytest
+
 # Note: These are conceptual integration tests that would run in a browser environment
-# They serve as documentation and can be adapted to Selenium/Playwright tests
+# They serve as documentation and can be adapted to Selenium/Playwright tests.
+# The conceptual TestXxx classes below are skipped until a Playwright/Selenium
+# harness is wired up; their bodies are intentionally `pass` placeholders that
+# document acceptance criteria.
+_BROWSER_SKIP = pytest.mark.skip(
+    reason="TODO: conceptual browser tests; requires Playwright/Selenium harness"
+)
 
 
+@_BROWSER_SKIP
 class TestDirectoryExpansion:
     """Tests for directory expansion workflow."""
 
@@ -60,6 +69,7 @@ class TestDirectoryExpansion:
         pass
 
 
+@_BROWSER_SKIP
 class TestFileExpansion:
     """Tests for file expansion workflow."""
 
@@ -89,6 +99,7 @@ class TestFileExpansion:
         pass
 
 
+@_BROWSER_SKIP
 class TestBreadcrumbNavigation:
     """Tests for breadcrumb navigation."""
 
@@ -117,6 +128,7 @@ class TestBreadcrumbNavigation:
         pass
 
 
+@_BROWSER_SKIP
 class TestStateManagement:
     """Tests for state consistency."""
 
@@ -156,6 +168,7 @@ class TestStateManagement:
         pass
 
 
+@_BROWSER_SKIP
 class TestEdgeFiltering:
     """Tests for edge visibility rules."""
 
@@ -192,6 +205,7 @@ class TestEdgeFiltering:
         pass
 
 
+@_BROWSER_SKIP
 class TestAnimations:
     """Tests for animation smoothness."""
 
@@ -218,6 +232,7 @@ class TestAnimations:
         pass
 
 
+@_BROWSER_SKIP
 class TestPerformance:
     """Performance benchmarks for V2.0."""
 
@@ -256,6 +271,7 @@ class TestPerformance:
         pass
 
 
+@_BROWSER_SKIP
 class TestKeyboardNavigation:
     """Tests for keyboard shortcuts."""
 
@@ -293,6 +309,7 @@ class TestKeyboardNavigation:
         pass
 
 
+@_BROWSER_SKIP
 class TestErrorHandling:
     """Tests for error conditions."""
 
