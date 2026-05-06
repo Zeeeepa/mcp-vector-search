@@ -238,8 +238,8 @@ class ChunksBackend:
                                 f"Schema mismatch: missing fields {missing}. "
                                 f"Recreating table with current schema."
                             )
+                            self._table = None  # clear reference before drop
                             self._db.drop_table(self.TABLE_NAME)
-                            self._table = None
                             logger.debug(
                                 "Table dropped, will be recreated on first write"
                             )

@@ -1575,8 +1575,8 @@ class SemanticSearchEngine:
         self,
         query: str,
         limit: int,
-        filters: dict[str, Any] | None,
-        threshold: float,
+        _filters: dict[str, Any] | None,
+        _threshold: float,
         tests_only: bool = False,
     ) -> list[SearchResult]:
         """Pure BM25 keyword search.
@@ -1584,8 +1584,8 @@ class SemanticSearchEngine:
         Args:
             query: Search query
             limit: Maximum results
-            filters: Optional metadata filters
-            threshold: Minimum similarity threshold (unused for BM25, kept for API compatibility)
+            _filters: Optional metadata filters (unused for BM25, kept for API compatibility)
+            _threshold: Minimum similarity threshold (unused for BM25, kept for API compatibility)
 
         Returns:
             List of SearchResult objects

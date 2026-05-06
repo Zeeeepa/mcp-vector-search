@@ -658,6 +658,10 @@ class SemanticIndexer:
         # Filter files that need indexing
         files_to_index = all_files
         file_hash_cache: dict[Path, str] = {}
+        if (
+            self.chunks_backend is None
+        ):  # always set in __init__; guard for type narrowing
+            raise RuntimeError("chunks_backend is not initialized")
         if not force_reindex:
             logger.info(
                 f"Incremental change detection: checking {len(all_files)} files..."
