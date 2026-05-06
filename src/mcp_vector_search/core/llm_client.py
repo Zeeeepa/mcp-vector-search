@@ -103,84 +103,129 @@ class LLMClient:
             self.openrouter_key = api_key
 
         # Determine which provider to use
-        if provider:
-            # Explicit provider specified
-            self.provider: LLMProvider = provider
-            if provider == "openai" and not self.openai_key:
-                raise ValueError(
-                    "OpenAI provider specified but OPENAI_API_KEY not found. "
-                    "Please set OPENAI_API_KEY environment variable."
-                )
-            elif provider == "openrouter" and not self.openrouter_key:
-                raise ValueError(
-                    "OpenRouter provider specified but OPENROUTER_API_KEY not found. "
-                    "Please set OPENROUTER_API_KEY environment variable."
-                )
-            elif provider == "bedrock" and not self._bedrock_available:
-                raise ValueError(
-                    "Bedrock provider specified but AWS credentials not found. "
-                    "Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
-                )
-            # ollama: no key required — validated at connection time
-        else:
-            # Auto-detect provider (prefer Bedrock → OpenRouter → OpenAI)
-            if self._bedrock_available:
-                self.provider = "bedrock"
-            elif self.openrouter_key:
-                self.provider = "openrouter"
-            elif self.openai_key:
-                self.provider = "openai"
-            else:
-                raise ValueError(
-                    "No API key or AWS credentials found. Please set AWS credentials "
-                    "(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) for Bedrock, "
-                    "OPENROUTER_API_KEY for OpenRouter, or OPENAI_API_KEY for OpenAI. "
-                    "Alternatively, start Ollama (ollama serve) and use --provider ollama."
-                )
+        self.provider: LLMProvider = self._resolve_provider(provider)
 
-        # Set API key and endpoint based on provider
-        # Select model: explicit > env var > thinking model > default model
-        if self.provider == "openai":
-            self.api_key = self.openai_key
-            self.api_endpoint = self.API_ENDPOINTS["openai"]
-            default_model = (
-                self.THINKING_MODELS["openai"]
-                if think
-                else self.DEFAULT_MODELS["openai"]
-            )
-            self.model = model or os.environ.get("OPENAI_MODEL", default_model)
-        elif self.provider == "openrouter":
-            self.api_key = self.openrouter_key
-            self.api_endpoint = self.API_ENDPOINTS["openrouter"]
-            default_model = (
-                self.THINKING_MODELS["openrouter"]
-                if think
-                else self.DEFAULT_MODELS["openrouter"]
-            )
-            self.model = model or os.environ.get("OPENROUTER_MODEL", default_model)
-        elif self.provider == "ollama":
-            self.api_key = None  # No auth required for local Ollama
-            self.api_endpoint = os.environ.get(
-                "OLLAMA_API_URL", self.API_ENDPOINTS["ollama"]
-            )
-            self.model = model or os.environ.get(
-                "OLLAMA_MODEL", self.DEFAULT_MODELS["ollama"]
-            )
-        else:  # bedrock
-            self.api_key = None  # Not used for Bedrock
-            self.api_endpoint = None  # Not used for Bedrock
-            default_model = (
-                self.THINKING_MODELS["bedrock"]
-                if think
-                else self.DEFAULT_MODELS["bedrock"]
-            )
-            self.model = model or os.environ.get("BEDROCK_MODEL", default_model)
+        # Set API key, endpoint, and model based on provider
+        self._configure_provider(model, think)
 
         self.timeout = timeout
 
         logger.debug(
             f"Initialized LLM client with provider: {self.provider}, model: {self.model}"
         )
+
+    def _resolve_provider(self, provider: LLMProvider | None) -> LLMProvider:
+        """Resolve which provider to use based on explicit choice or auto-detect.
+
+        Args:
+            provider: Explicit provider, or None for auto-detect
+
+        Returns:
+            Resolved provider name
+
+        Raises:
+            ValueError: If credentials are missing for the chosen/detected provider
+        """
+        if provider:
+            self._validate_provider_credentials(provider)
+            return provider
+
+        # Auto-detect provider (prefer Bedrock → OpenRouter → OpenAI)
+        if self._bedrock_available:
+            return "bedrock"
+        if self.openrouter_key:
+            return "openrouter"
+        if self.openai_key:
+            return "openai"
+        raise ValueError(
+            "No API key or AWS credentials found. Please set AWS credentials "
+            "(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) for Bedrock, "
+            "OPENROUTER_API_KEY for OpenRouter, or OPENAI_API_KEY for OpenAI. "
+            "Alternatively, start Ollama (ollama serve) and use --provider ollama."
+        )
+
+    def _validate_provider_credentials(self, provider: LLMProvider) -> None:
+        """Validate that credentials exist for an explicitly-specified provider.
+
+        Args:
+            provider: Provider whose credentials should be checked
+
+        Raises:
+            ValueError: If credentials for the provider are missing
+        """
+        if provider == "openai" and not self.openai_key:
+            raise ValueError(
+                "OpenAI provider specified but OPENAI_API_KEY not found. "
+                "Please set OPENAI_API_KEY environment variable."
+            )
+        if provider == "openrouter" and not self.openrouter_key:
+            raise ValueError(
+                "OpenRouter provider specified but OPENROUTER_API_KEY not found. "
+                "Please set OPENROUTER_API_KEY environment variable."
+            )
+        if provider == "bedrock" and not self._bedrock_available:
+            raise ValueError(
+                "Bedrock provider specified but AWS credentials not found. "
+                "Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
+            )
+        # ollama: no key required — validated at connection time
+
+    def _configure_provider(self, model: str | None, think: bool) -> None:
+        """Configure api_key, api_endpoint, and model attributes for current provider.
+
+        Selection precedence: explicit model > env var > thinking model > default model
+
+        Args:
+            model: Explicit model override (or None to use env/default)
+            think: Whether to prefer thinking-tier models
+        """
+        if self.provider == "openai":
+            self._configure_openai(model, think)
+        elif self.provider == "openrouter":
+            self._configure_openrouter(model, think)
+        elif self.provider == "ollama":
+            self._configure_ollama(model)
+        else:  # bedrock
+            self._configure_bedrock(model, think)
+
+    def _configure_openai(self, model: str | None, think: bool) -> None:
+        """Configure attributes for the OpenAI provider."""
+        self.api_key = self.openai_key
+        self.api_endpoint = self.API_ENDPOINTS["openai"]
+        default_model = (
+            self.THINKING_MODELS["openai"] if think else self.DEFAULT_MODELS["openai"]
+        )
+        self.model = model or os.environ.get("OPENAI_MODEL", default_model)
+
+    def _configure_openrouter(self, model: str | None, think: bool) -> None:
+        """Configure attributes for the OpenRouter provider."""
+        self.api_key = self.openrouter_key
+        self.api_endpoint = self.API_ENDPOINTS["openrouter"]
+        default_model = (
+            self.THINKING_MODELS["openrouter"]
+            if think
+            else self.DEFAULT_MODELS["openrouter"]
+        )
+        self.model = model or os.environ.get("OPENROUTER_MODEL", default_model)
+
+    def _configure_ollama(self, model: str | None) -> None:
+        """Configure attributes for the Ollama provider (no auth required)."""
+        self.api_key = None  # No auth required for local Ollama
+        self.api_endpoint = os.environ.get(
+            "OLLAMA_API_URL", self.API_ENDPOINTS["ollama"]
+        )
+        self.model = model or os.environ.get(
+            "OLLAMA_MODEL", self.DEFAULT_MODELS["ollama"]
+        )
+
+    def _configure_bedrock(self, model: str | None, think: bool) -> None:
+        """Configure attributes for the Bedrock provider (no HTTP endpoint)."""
+        self.api_key = None  # Not used for Bedrock
+        self.api_endpoint = None  # Not used for Bedrock
+        default_model = (
+            self.THINKING_MODELS["bedrock"] if think else self.DEFAULT_MODELS["bedrock"]
+        )
+        self.model = model or os.environ.get("BEDROCK_MODEL", default_model)
 
     def _get_endpoint(self) -> str:
         """Get API endpoint URL for current provider, raising if not configured.
@@ -420,23 +465,12 @@ Select the top {top_n} most relevant results:"""
 
         return await detect_ollama()
 
-    async def _chat_completion(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        """Make chat completion request to OpenAI, OpenRouter, Bedrock, or Ollama API.
-
-        Args:
-            messages: List of message dictionaries with role and content
+    def _build_request_headers(self) -> dict[str, str]:
+        """Build HTTP headers for the current (non-Bedrock) provider.
 
         Returns:
-            API response dictionary
-
-        Raises:
-            SearchError: If API request fails
+            Dict of headers including Authorization and any provider-specific entries
         """
-        # Route to Bedrock if that's the provider
-        if self.provider == "bedrock":
-            return await self._bedrock_chat_completion(messages)
-
-        # Build headers based on provider
         if self.provider == "ollama":
             # Ollama's OpenAI-compat endpoint: no real auth required
             headers = {
@@ -454,11 +488,80 @@ Select the top {top_n} most relevant results:"""
             headers["HTTP-Referer"] = "https://github.com/bobmatnyc/mcp-vector-search"
             headers["X-Title"] = "MCP Vector Search"
 
+        return headers
+
+    def _format_http_status_error(
+        self, exc: httpx.HTTPStatusError, *, include_body_detail: bool = True
+    ) -> str:
+        """Build a user-friendly error message from an httpx HTTPStatusError.
+
+        Args:
+            exc: The exception to format
+            include_body_detail: If True, attempt to extract error.message from JSON body
+
+        Returns:
+            Formatted error message string
+        """
+        provider_name = self.provider.capitalize()
+        status_code = exc.response.status_code
+        error_msg = f"{provider_name} API error (HTTP {status_code})"
+
+        if include_body_detail:
+            # Try to get more details from the response
+            try:
+                error_body = exc.response.json()
+                error_detail = error_body.get("error", {}).get("message", "")
+                if error_detail:
+                    error_msg = f"{error_msg}: {error_detail}"
+            except Exception:
+                pass
+
+        if status_code == 400:
+            if self.provider == "ollama":
+                error_msg = (
+                    f"{error_msg}. Check model name with: ollama list\n"
+                    f"Current model: {self.model}"
+                )
+            else:
+                error_msg = f"{error_msg}. Check model name and request format."
+        elif status_code == 401:
+            env_var = (
+                "OPENAI_API_KEY" if self.provider == "openai" else "OPENROUTER_API_KEY"
+            )
+            error_msg = (
+                f"Invalid {provider_name} API key. "
+                f"Please check {env_var} environment variable."
+            )
+        elif status_code == 429:
+            error_msg = (
+                f"{provider_name} API rate limit exceeded. Please wait and try again."
+            )
+        elif status_code >= 500:
+            error_msg = f"{provider_name} API server error. Please try again later."
+
+        return error_msg
+
+    async def _chat_completion(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        """Make chat completion request to OpenAI, OpenRouter, Bedrock, or Ollama API.
+
+        Args:
+            messages: List of message dictionaries with role and content
+
+        Returns:
+            API response dictionary
+
+        Raises:
+            SearchError: If API request fails
+        """
+        # Route to Bedrock if that's the provider
+        if self.provider == "bedrock":
+            return await self._bedrock_chat_completion(messages)
+
+        headers = self._build_request_headers()
         payload = {
             "model": self.model,
             "messages": messages,
         }
-
         provider_name = self.provider.capitalize()
 
         try:
@@ -489,44 +592,73 @@ Select the top {top_n} most relevant results:"""
             ) from e
 
         except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code
-            error_msg = f"{provider_name} API error (HTTP {status_code})"
-
-            # Try to get more details from the response
-            try:
-                error_body = e.response.json()
-                error_detail = error_body.get("error", {}).get("message", "")
-                if error_detail:
-                    error_msg = f"{error_msg}: {error_detail}"
-            except Exception:
-                pass
-
-            if status_code == 400:
-                if self.provider == "ollama":
-                    error_msg = (
-                        f"{error_msg}. Check model name with: ollama list\n"
-                        f"Current model: {self.model}"
-                    )
-                else:
-                    error_msg = f"{error_msg}. Check model name and request format."
-            elif status_code == 401:
-                env_var = (
-                    "OPENAI_API_KEY"
-                    if self.provider == "openai"
-                    else "OPENROUTER_API_KEY"
-                )
-                error_msg = f"Invalid {provider_name} API key. Please check {env_var} environment variable."
-            elif status_code == 429:
-                error_msg = f"{provider_name} API rate limit exceeded. Please wait and try again."
-            elif status_code >= 500:
-                error_msg = f"{provider_name} API server error. Please try again later."
-
+            error_msg = self._format_http_status_error(e)
             logger.error(error_msg)
             raise SearchError(error_msg) from e
 
         except Exception as e:
             logger.error(f"{provider_name} API request failed: {e}")
             raise SearchError(f"LLM request failed: {e}") from e
+
+    def _build_bedrock_request_params(
+        self, messages: list[dict[str, str]]
+    ) -> dict[str, Any]:
+        """Build the Bedrock Converse API request_params dict from OpenAI-format messages.
+
+        Splits out user/assistant turns into Bedrock content blocks and lifts the
+        first system message into the dedicated ``system`` field.
+        """
+        # Convert messages to Bedrock format
+        bedrock_messages = []
+        for msg in messages:
+            role = msg["role"]
+            # Bedrock uses "user" and "assistant" (no "system" in messages)
+            if role in ("user", "assistant"):
+                bedrock_messages.append(
+                    {"role": role, "content": [{"text": msg["content"]}]}
+                )
+
+        # Extract system message if present
+        system_messages = [msg for msg in messages if msg["role"] == "system"]
+        system_content = None
+        if system_messages:
+            system_content = [{"text": system_messages[0]["content"]}]
+
+        # Build Bedrock request
+        request_params: dict[str, Any] = {
+            "modelId": self.model,
+            "messages": bedrock_messages,
+            "inferenceConfig": {
+                "maxTokens": 4096,
+                "temperature": 0.7,
+            },
+        }
+
+        # Add system message if present
+        if system_content:
+            request_params["system"] = system_content
+
+        return request_params
+
+    def _format_bedrock_error(self, exc: Exception) -> str:
+        """Translate a Bedrock SDK exception into a user-friendly error string."""
+        error_msg = str(exc)
+
+        # Parse common Bedrock errors
+        if "AccessDeniedException" in error_msg:
+            return (
+                "AWS credentials invalid or insufficient permissions for Bedrock. "
+                "Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
+            )
+        if "ValidationException" in error_msg:
+            return f"Invalid Bedrock request: {error_msg}"
+        if "ThrottlingException" in error_msg:
+            return "Bedrock API rate limit exceeded. Please wait and try again."
+        if "ModelNotReadyException" in error_msg:
+            return f"Bedrock model {self.model} is not ready or not available in your region."
+        if "ResourceNotFoundException" in error_msg:
+            return f"Bedrock model {self.model} not found. Check model ID and region."
+        return error_msg
 
     async def _bedrock_chat_completion(
         self, messages: list[dict[str, str]]
@@ -543,35 +675,7 @@ Select the top {top_n} most relevant results:"""
             SearchError: If Bedrock API request fails
         """
         try:
-            # Convert messages to Bedrock format
-            bedrock_messages = []
-            for msg in messages:
-                role = msg["role"]
-                # Bedrock uses "user" and "assistant" (no "system" in messages)
-                if role in ("user", "assistant"):
-                    bedrock_messages.append(
-                        {"role": role, "content": [{"text": msg["content"]}]}
-                    )
-
-            # Extract system message if present
-            system_messages = [msg for msg in messages if msg["role"] == "system"]
-            system_content = None
-            if system_messages:
-                system_content = [{"text": system_messages[0]["content"]}]
-
-            # Build Bedrock request
-            request_params = {
-                "modelId": self.model,
-                "messages": bedrock_messages,
-                "inferenceConfig": {
-                    "maxTokens": 4096,
-                    "temperature": 0.7,
-                },
-            }
-
-            # Add system message if present
-            if system_content:
-                request_params["system"] = system_content
+            request_params = self._build_bedrock_request_params(messages)
 
             # Run boto3 call in executor (boto3 is synchronous)
             loop = asyncio.get_event_loop()
@@ -600,27 +704,7 @@ Select the top {top_n} most relevant results:"""
 
         except Exception as e:
             logger.error(f"Bedrock API request failed: {e}")
-            error_msg = str(e)
-
-            # Parse common Bedrock errors
-            if "AccessDeniedException" in error_msg:
-                error_msg = (
-                    "AWS credentials invalid or insufficient permissions for Bedrock. "
-                    "Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
-                )
-            elif "ValidationException" in error_msg:
-                error_msg = f"Invalid Bedrock request: {error_msg}"
-            elif "ThrottlingException" in error_msg:
-                error_msg = (
-                    "Bedrock API rate limit exceeded. Please wait and try again."
-                )
-            elif "ModelNotReadyException" in error_msg:
-                error_msg = f"Bedrock model {self.model} is not ready or not available in your region."
-            elif "ResourceNotFoundException" in error_msg:
-                error_msg = (
-                    f"Bedrock model {self.model} not found. Check model ID and region."
-                )
-
+            error_msg = self._format_bedrock_error(e)
             raise SearchError(f"Bedrock request failed: {error_msg}") from e
 
     def _format_results_for_analysis(self, search_results: dict[str, list[Any]]) -> str:
@@ -661,24 +745,11 @@ Select the top {top_n} most relevant results:"""
 
         return "\n".join(formatted)
 
-    def _parse_ranking_response(
-        self,
-        llm_response: str,
-        search_results: dict[str, list[Any]],
-        top_n: int,
-    ) -> list[dict[str, Any]]:
-        """Parse LLM ranking response into structured results.
-
-        Args:
-            llm_response: Raw LLM response text
-            search_results: Original search results dictionary
-            top_n: Maximum number of results to return
-
-        Returns:
-            List of ranked results with metadata
-        """
-        ranked = []
-        current_result = {}
+    @staticmethod
+    def _parse_ranking_blocks(llm_response: str) -> list[dict[str, str]]:
+        """Parse RESULT:/RELEVANCE:/EXPLANATION: line-blocks from LLM output."""
+        ranked: list[dict[str, str]] = []
+        current_result: dict[str, str] = {}
 
         for line in llm_response.split("\n"):
             line = line.strip()
@@ -698,55 +769,85 @@ Select the top {top_n} most relevant results:"""
         if current_result:
             ranked.append(current_result)
 
+        return ranked
+
+    @staticmethod
+    def _resolve_ranking_identifier(
+        identifier: str, search_results: dict[str, list[Any]]
+    ) -> tuple[str, Any] | None:
+        """Resolve a "Query N, Result M" identifier to (query, result) tuple.
+
+        Returns None if the identifier cannot be parsed or indices are out of range.
+        """
+        try:
+            parts = identifier.split(",")
+            query_part = parts[0].replace("Query", "").strip()
+            result_part = parts[1].replace("Result", "").strip()
+
+            # Handle case where LLM includes filename in parentheses: "5 (config.py)"
+            # Extract just the number
+            query_match = re.match(r"(\d+)", query_part)
+            result_match = re.match(r"(\d+)", result_part)
+
+            if not query_match or not result_match:
+                logger.warning(
+                    f"Could not extract numbers from identifier '{identifier}'"
+                )
+                return None
+
+            query_idx = int(query_match.group(1)) - 1
+            result_idx = int(result_match.group(1)) - 1
+
+            queries = list(search_results.keys())
+            if query_idx >= len(queries):
+                return None
+
+            query = queries[query_idx]
+            results = search_results[query]
+            if result_idx >= len(results):
+                return None
+
+            return query, results[result_idx]
+
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Failed to parse result identifier '{identifier}': {e}")
+            return None
+
+    def _parse_ranking_response(
+        self,
+        llm_response: str,
+        search_results: dict[str, list[Any]],
+        top_n: int,
+    ) -> list[dict[str, Any]]:
+        """Parse LLM ranking response into structured results.
+
+        Args:
+            llm_response: Raw LLM response text
+            search_results: Original search results dictionary
+            top_n: Maximum number of results to return
+
+        Returns:
+            List of ranked results with metadata
+        """
+        ranked = self._parse_ranking_blocks(llm_response)
+
         # Map identifiers back to actual SearchResult objects
-        enriched_results = []
+        enriched_results: list[dict[str, Any]] = []
 
         for item in ranked[:top_n]:
             identifier = item.get("identifier", "")
-
-            # Parse identifier (e.g., "Query 1, Result 2" or "Query 1, Result 2 (filename.py)")
-            try:
-                parts = identifier.split(",")
-                query_part = parts[0].replace("Query", "").strip()
-                result_part = parts[1].replace("Result", "").strip()
-
-                # Handle case where LLM includes filename in parentheses: "5 (config.py)"
-                # Extract just the number
-                query_match = re.match(r"(\d+)", query_part)
-                result_match = re.match(r"(\d+)", result_part)
-
-                if not query_match or not result_match:
-                    logger.warning(
-                        f"Could not extract numbers from identifier '{identifier}'"
-                    )
-                    continue
-
-                query_idx = int(query_match.group(1)) - 1
-                result_idx = int(result_match.group(1)) - 1
-
-                # Get corresponding query and result
-                queries = list(search_results.keys())
-                if query_idx < len(queries):
-                    query = queries[query_idx]
-                    results = search_results[query]
-
-                    if result_idx < len(results):
-                        actual_result = results[result_idx]
-
-                        enriched_results.append(
-                            {
-                                "result": actual_result,
-                                "query": query,
-                                "relevance": item.get("relevance", "Medium"),
-                                "explanation": item.get(
-                                    "explanation", "Relevant to query"
-                                ),
-                            }
-                        )
-
-            except (ValueError, IndexError) as e:
-                logger.warning(f"Failed to parse result identifier '{identifier}': {e}")
+            resolved = self._resolve_ranking_identifier(identifier, search_results)
+            if resolved is None:
                 continue
+            query, actual_result = resolved
+            enriched_results.append(
+                {
+                    "result": actual_result,
+                    "query": query,
+                    "relevance": item.get("relevance", "Medium"),
+                    "explanation": item.get("explanation", "Relevant to query"),
+                }
+            )
 
         return enriched_results
 
@@ -808,6 +909,44 @@ Intent:"""
             logger.error(f"Failed to detect intent: {e}, defaulting to 'find'")
             return "find"
 
+    @staticmethod
+    def _parse_sse_line(line: str) -> str | None:
+        """Parse a single SSE line into emittable content.
+
+        Args:
+            line: Raw line from the SSE stream
+
+        Returns:
+            - None if the line should be skipped (empty, comment, malformed JSON, no content)
+            - "__DONE__" sentinel if the stream signalled end-of-stream
+            - The content text chunk otherwise (may be empty string if delta lacked content)
+        """
+        line = line.strip()
+
+        # Skip empty lines and comments
+        if not line or line.startswith(":"):
+            return None
+
+        # Parse SSE format: "data: {json}"
+        if not line.startswith("data: "):
+            return None
+
+        data = line[6:]  # Remove "data: " prefix
+
+        # Check for end of stream
+        if data == "[DONE]":
+            return "__DONE__"
+
+        try:
+            chunk = json.loads(data)
+            content = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+            if content:
+                return content
+            return None
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse SSE chunk: {e}")
+            return None
+
     async def stream_chat_completion(
         self, messages: list[dict[str, str]]
     ) -> AsyncIterator[str]:
@@ -828,20 +967,7 @@ Intent:"""
                 yield chunk
             return
 
-        if self.provider == "ollama":
-            headers = {
-                "Authorization": "Bearer ollama",
-                "Content-Type": "application/json",
-            }
-        else:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-
-        if self.provider == "openrouter":
-            headers["HTTP-Referer"] = "https://github.com/bobmatnyc/mcp-vector-search"
-            headers["X-Title"] = "MCP Vector Search"
+        headers = self._build_request_headers()
 
         payload = {
             "model": self.model,
@@ -859,34 +985,13 @@ Intent:"""
                     response.raise_for_status()
 
                     async for line in response.aiter_lines():
-                        line = line.strip()
-
-                        # Skip empty lines and comments
-                        if not line or line.startswith(":"):
+                        parsed = self._parse_sse_line(line)
+                        if parsed is None:
                             continue
-
-                        # Parse SSE format: "data: {json}"
-                        if line.startswith("data: "):
-                            data = line[6:]  # Remove "data: " prefix
-
-                            # Check for end of stream
-                            if data == "[DONE]":
-                                break
-
-                            try:
-                                chunk = json.loads(data)
-                                content = (
-                                    chunk.get("choices", [{}])[0]
-                                    .get("delta", {})
-                                    .get("content")
-                                )
-
-                                if content:
-                                    yield content
-
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse SSE chunk: {e}")
-                                continue
+                        if parsed == "__DONE__":
+                            break
+                        if parsed:
+                            yield parsed
 
         except httpx.TimeoutException as e:
             logger.error(f"{provider_name} API timeout after {self.timeout}s")
@@ -896,27 +1001,40 @@ Intent:"""
             ) from e
 
         except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code
-            error_msg = f"{provider_name} API error (HTTP {status_code})"
-
-            if status_code == 401:
-                env_var = (
-                    "OPENAI_API_KEY"
-                    if self.provider == "openai"
-                    else "OPENROUTER_API_KEY"
-                )
-                error_msg = f"Invalid {provider_name} API key. Please check {env_var} environment variable."
-            elif status_code == 429:
-                error_msg = f"{provider_name} API rate limit exceeded. Please wait and try again."
-            elif status_code >= 500:
-                error_msg = f"{provider_name} API server error. Please try again later."
-
+            error_msg = self._format_stream_status_error(e)
             logger.error(error_msg)
             raise SearchError(error_msg) from e
 
         except Exception as e:
             logger.error(f"{provider_name} streaming request failed: {e}")
             raise SearchError(f"LLM streaming failed: {e}") from e
+
+    def _format_stream_status_error(self, exc: httpx.HTTPStatusError) -> str:
+        """Format an HTTPStatusError raised during streaming.
+
+        Mirrors the legacy behaviour: handles 401/429/500+, no body-detail
+        extraction and no 400-specific message.
+        """
+        provider_name = self.provider.capitalize()
+        status_code = exc.response.status_code
+        error_msg = f"{provider_name} API error (HTTP {status_code})"
+
+        if status_code == 401:
+            env_var = (
+                "OPENAI_API_KEY" if self.provider == "openai" else "OPENROUTER_API_KEY"
+            )
+            error_msg = (
+                f"Invalid {provider_name} API key. "
+                f"Please check {env_var} environment variable."
+            )
+        elif status_code == 429:
+            error_msg = (
+                f"{provider_name} API rate limit exceeded. Please wait and try again."
+            )
+        elif status_code >= 500:
+            error_msg = f"{provider_name} API server error. Please try again later."
+
+        return error_msg
 
     async def _bedrock_stream_chat_completion(
         self, messages: list[dict[str, str]]
@@ -933,33 +1051,7 @@ Intent:"""
             SearchError: If Bedrock streaming request fails
         """
         try:
-            # Convert messages to Bedrock format
-            bedrock_messages = []
-            for msg in messages:
-                role = msg["role"]
-                if role in ("user", "assistant"):
-                    bedrock_messages.append(
-                        {"role": role, "content": [{"text": msg["content"]}]}
-                    )
-
-            # Extract system message if present
-            system_messages = [msg for msg in messages if msg["role"] == "system"]
-            system_content = None
-            if system_messages:
-                system_content = [{"text": system_messages[0]["content"]}]
-
-            # Build Bedrock request
-            request_params = {
-                "modelId": self.model,
-                "messages": bedrock_messages,
-                "inferenceConfig": {
-                    "maxTokens": 4096,
-                    "temperature": 0.7,
-                },
-            }
-
-            if system_content:
-                request_params["system"] = system_content
+            request_params = self._build_bedrock_request_params(messages)
 
             # Run streaming call in executor
             loop = asyncio.get_event_loop()
@@ -1148,6 +1240,103 @@ Guidelines:
         return result
 
     @staticmethod
+    def _make_tool_call(call_id: str, name: str, args: Any) -> dict[str, Any]:
+        """Construct an OpenAI-format tool_call dict from a name/args pair."""
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(args),
+            },
+        }
+
+    @staticmethod
+    def _parse_tool_calls_xml(content: str) -> list[dict[str, Any]]:
+        """Parse ``<tool_call>{...}</tool_call>`` XML-tagged tool calls."""
+        calls: list[dict[str, Any]] = []
+        xml_pattern = re.compile(
+            rf"{re.escape(_TOOL_CALL_OPEN)}\s*(.*?)\s*{re.escape(_TOOL_CALL_CLOSE)}",
+            re.DOTALL,
+        )
+        for match_idx, m in enumerate(xml_pattern.finditer(content)):
+            raw = m.group(1).strip()
+            try:
+                parsed = json.loads(raw)
+                name = parsed.get("name", "")
+                args = parsed.get("arguments", parsed.get("args", {}))
+                if name:
+                    calls.append(
+                        LLMClient._make_tool_call(
+                            f"ollama_call_{match_idx}", name, args
+                        )
+                    )
+            except json.JSONDecodeError as exc:
+                logger.debug(f"Could not parse tool_call XML block: {exc}\nRaw: {raw}")
+        return calls
+
+    @staticmethod
+    def _collect_json_candidates(content: str, stripped: str) -> list[str]:
+        """Collect JSON candidate substrings from raw model output.
+
+        Handles markdown code-fences and embedded JSON objects in prose.
+        """
+        code_fence = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped)
+        if code_fence:
+            return [code_fence.group(1).strip()]
+
+        candidates: list[str] = [stripped]
+        # Also scan for embedded JSON objects (e.g. text\n{...} )
+        for m in re.finditer(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}", content, re.DOTALL):
+            candidate = m.group(0).strip()
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    @staticmethod
+    def _parse_tool_calls_bare_json(
+        content: str, stripped: str
+    ) -> list[dict[str, Any]]:
+        """Parse a bare JSON object (or fenced block) with name/arguments keys."""
+        for json_candidate in LLMClient._collect_json_candidates(content, stripped):
+            try:
+                parsed = json.loads(json_candidate)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            # Must look like a tool call: has "name" (str) and "arguments" (dict)
+            if (
+                isinstance(parsed, dict)
+                and isinstance(parsed.get("name"), str)
+                and parsed["name"]
+                and isinstance(parsed.get("arguments", parsed.get("args")), dict)
+            ):
+                name = parsed["name"]
+                args = parsed.get("arguments", parsed.get("args", {}))
+                return [LLMClient._make_tool_call("ollama_call_0", name, args)]
+        return []
+
+    @staticmethod
+    def _parse_tool_calls_fn_json(stripped: str) -> list[dict[str, Any]]:
+        """Parse ``function_name {json_args}`` single-line format (qwen2.5-coder)."""
+        fn_json_pattern = re.compile(
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\s+(\{.*\})\s*$",
+            re.DOTALL,
+        )
+        fn_match = fn_json_pattern.match(stripped)
+        if not fn_match:
+            return []
+
+        fn_name = fn_match.group(1)
+        raw_args = fn_match.group(2).strip()
+        try:
+            args = json.loads(raw_args)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(args, dict):
+            return []
+        return [LLMClient._make_tool_call("ollama_call_0", fn_name, args)]
+
+    @staticmethod
     def _parse_ollama_tool_calls(content: str) -> list[dict[str, Any]]:
         """Extract tool call dicts from model output.
 
@@ -1165,113 +1354,20 @@ Guidelines:
         Returns:
             List of parsed tool call dicts (OpenAI tool_calls format), may be empty
         """
-        calls: list[dict[str, Any]] = []
-
         # --- Format 1: <tool_call>...</tool_call> XML tags ---
-        xml_pattern = re.compile(
-            rf"{re.escape(_TOOL_CALL_OPEN)}\s*(.*?)\s*{re.escape(_TOOL_CALL_CLOSE)}",
-            re.DOTALL,
-        )
-        for match_idx, m in enumerate(xml_pattern.finditer(content)):
-            raw = m.group(1).strip()
-            try:
-                parsed = json.loads(raw)
-                name = parsed.get("name", "")
-                args = parsed.get("arguments", parsed.get("args", {}))
-                if name:
-                    calls.append(
-                        {
-                            "id": f"ollama_call_{match_idx}",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(args),
-                            },
-                        }
-                    )
-            except json.JSONDecodeError as exc:
-                logger.debug(f"Could not parse tool_call XML block: {exc}\nRaw: {raw}")
-
+        calls = LLMClient._parse_tool_calls_xml(content)
         if calls:
             return calls
 
         stripped = content.strip()
 
         # --- Format 2: bare JSON object or JSON code-fence block ---
-        # e.g. {"name": "search_code", "arguments": {"query": "..."}}
-        # Also handles mixed content where a JSON block is embedded in prose.
-        # Strip markdown code fences if present (```json ... ``` or ``` ... ```)
-        code_fence = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped)
-        json_candidates: list[str] = []
-        if code_fence:
-            json_candidates.append(code_fence.group(1).strip())
-        else:
-            # Try whole content as JSON first
-            json_candidates.append(stripped)
-            # Also scan for embedded JSON objects (e.g. text\n{...} )
-            for m in re.finditer(
-                r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}", content, re.DOTALL
-            ):
-                candidate = m.group(0).strip()
-                if candidate not in json_candidates:
-                    json_candidates.append(candidate)
-
-        for json_candidate in json_candidates:
-            try:
-                parsed = json.loads(json_candidate)
-                # Must look like a tool call: has "name" (str) and "arguments" (dict)
-                if (
-                    isinstance(parsed, dict)
-                    and isinstance(parsed.get("name"), str)
-                    and parsed["name"]
-                    and isinstance(parsed.get("arguments", parsed.get("args")), dict)
-                ):
-                    name = parsed["name"]
-                    args = parsed.get("arguments", parsed.get("args", {}))
-                    calls.append(
-                        {
-                            "id": "ollama_call_0",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(args),
-                            },
-                        }
-                    )
-                    break  # Take first valid tool call found
-            except (json.JSONDecodeError, TypeError):
-                pass
-
+        calls = LLMClient._parse_tool_calls_bare_json(content, stripped)
         if calls:
             return calls
 
         # --- Format 3: "function_name {json_args}" on a single line ---
-        # Some models (qwen2.5-coder) emit: search_code {"query": "..."}
-        fn_json_pattern = re.compile(
-            r"^([a-zA-Z_][a-zA-Z0-9_]*)\s+(\{.*\})\s*$",
-            re.DOTALL,
-        )
-        fn_match = fn_json_pattern.match(stripped)
-        if fn_match:
-            fn_name = fn_match.group(1)
-            raw_args = fn_match.group(2).strip()
-            try:
-                args = json.loads(raw_args)
-                if isinstance(args, dict):
-                    calls.append(
-                        {
-                            "id": "ollama_call_0",
-                            "type": "function",
-                            "function": {
-                                "name": fn_name,
-                                "arguments": json.dumps(args),
-                            },
-                        }
-                    )
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        return calls
+        return LLMClient._parse_tool_calls_fn_json(stripped)
 
     async def _ollama_native_chat_with_tools(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
@@ -1310,31 +1406,17 @@ Guidelines:
             response.raise_for_status()
             return response.json()
 
-    async def _ollama_chat_with_tools(
+    async def _try_ollama_native_call(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        """Tool-calling for Ollama: native API first, XML fallback second.
-
-        Strategy:
-        1. Try Ollama's native ``tools:`` parameter (OpenAI-compatible format).
-           Models like qwen2.5-coder, llama3, gemma3 honour this natively and
-           return ``tool_calls`` in the response.
-        2. If the response has no ``tool_calls`` AND the content text contains
-           ``<tool_call>`` tags, parse those tags as a fallback (handles older
-           models that were prompted with XML).
-        3. If the native call fails with a 400/422 (model doesn't support
-           tools natively), fall back to the prompt-engineering approach.
-
-        Args:
-            messages: Conversation messages
-            tools: OpenAI-format tool list
+    ) -> dict[str, Any] | None:
+        """Attempt the Ollama native tool-calling endpoint, returning None on failure.
 
         Returns:
-            OpenAI-compatible response dict (with tool_calls if a tool was requested)
+            Response dict on success, or None if the call failed in a way that
+            indicates we should fall back to prompt-engineering.
         """
-        # --- Attempt 1: native function calling ---
         try:
-            response = await self._ollama_native_chat_with_tools(messages, tools)
+            return await self._ollama_native_chat_with_tools(messages, tools)
         except httpx.HTTPStatusError as exc:
             # Some older Ollama builds / models reject the tools parameter
             if exc.response.status_code in (400, 422):
@@ -1342,55 +1424,64 @@ Guidelines:
                     f"Ollama native tool calling failed ({exc.response.status_code}), "
                     "falling back to prompt-engineering approach"
                 )
-                response = None
-            else:
-                raise
+                return None
+            raise
         except Exception:
-            response = None
+            return None
 
-        if response is not None:
-            # Check if model returned native tool_calls
-            msg = response.get("choices", [{}])[0].get("message", {})
-            if msg.get("tool_calls"):
-                logger.debug("Ollama returned native tool_calls — using them directly")
-                return response
+    def _handle_ollama_native_response(
+        self, response: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Process a successful native-call response, extracting tool_calls if any.
 
-            # Native call succeeded but no tool_calls — check for XML fallback tags
-            content = msg.get("content", "") or ""
-            xml_calls = self._parse_ollama_tool_calls(content)
-            if xml_calls:
-                logger.debug(
-                    "Ollama response contained <tool_call> XML tags — parsed as fallback"
-                )
-                clean_content = re.sub(
-                    rf"{re.escape(_TOOL_CALL_OPEN)}.*?{re.escape(_TOOL_CALL_CLOSE)}",
-                    "",
-                    content,
-                    flags=re.DOTALL,
-                ).strip()
-                return {
-                    "choices": [
-                        {
-                            "message": {
-                                "role": "assistant",
-                                "content": clean_content or None,
-                                "tool_calls": xml_calls,
-                            },
-                            "finish_reason": "tool_calls",
-                        }
-                    ]
-                }
-
-            # No tool calls at all — plain text answer
+        Falls back to scanning content for ``<tool_call>`` XML tags when the
+        native response did not include native tool_calls.
+        """
+        msg = response.get("choices", [{}])[0].get("message", {})
+        if msg.get("tool_calls"):
+            logger.debug("Ollama returned native tool_calls — using them directly")
             return response
 
-        # --- Attempt 2: prompt-engineering fallback ---
-        logger.debug("Using prompt-engineering tool-call fallback for Ollama")
-        tool_prompt = self._tools_to_system_prompt(tools)
-        patched_messages = self._inject_tools_into_messages(messages, tool_prompt)
+        # Native call succeeded but no tool_calls — check for XML fallback tags
+        content = msg.get("content", "") or ""
+        xml_calls = self._parse_ollama_tool_calls(content)
+        if xml_calls:
+            logger.debug(
+                "Ollama response contained <tool_call> XML tags — parsed as fallback"
+            )
+            clean_content = re.sub(
+                rf"{re.escape(_TOOL_CALL_OPEN)}.*?{re.escape(_TOOL_CALL_CLOSE)}",
+                "",
+                content,
+                flags=re.DOTALL,
+            ).strip()
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": clean_content or None,
+                            "tool_calls": xml_calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
 
-        # Strip any existing tool / tool_result messages that Ollama can't handle;
-        # flatten them into assistant/user text instead.
+        # No tool calls at all — plain text answer
+        return response
+
+    @staticmethod
+    def _normalize_messages_for_prompt_fallback(
+        patched_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Flatten tool/tool_call messages into plain assistant/user text.
+
+        Ollama's prompt-engineering fallback can't handle the OpenAI tool/role
+        ``tool`` messages or ``assistant.tool_calls`` arrays, so rewrite them
+        as <tool_call> tagged assistant messages and ``[Tool result]`` user
+        messages.
+        """
         normalized: list[dict[str, Any]] = []
         for msg in patched_messages:
             role = msg.get("role", "")
@@ -1416,6 +1507,44 @@ Guidelines:
                 )
             else:
                 normalized.append(msg)
+        return normalized
+
+    async def _ollama_chat_with_tools(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Tool-calling for Ollama: native API first, XML fallback second.
+
+        Strategy:
+        1. Try Ollama's native ``tools:`` parameter (OpenAI-compatible format).
+           Models like qwen2.5-coder, llama3, gemma3 honour this natively and
+           return ``tool_calls`` in the response.
+        2. If the response has no ``tool_calls`` AND the content text contains
+           ``<tool_call>`` tags, parse those tags as a fallback (handles older
+           models that were prompted with XML).
+        3. If the native call fails with a 400/422 (model doesn't support
+           tools natively), fall back to the prompt-engineering approach.
+
+        Args:
+            messages: Conversation messages
+            tools: OpenAI-format tool list
+
+        Returns:
+            OpenAI-compatible response dict (with tool_calls if a tool was requested)
+        """
+        # --- Attempt 1: native function calling ---
+        response = await self._try_ollama_native_call(messages, tools)
+
+        if response is not None:
+            return self._handle_ollama_native_response(response)
+
+        # --- Attempt 2: prompt-engineering fallback ---
+        logger.debug("Using prompt-engineering tool-call fallback for Ollama")
+        tool_prompt = self._tools_to_system_prompt(tools)
+        patched_messages = self._inject_tools_into_messages(messages, tool_prompt)
+
+        # Strip any existing tool / tool_result messages that Ollama can't handle;
+        # flatten them into assistant/user text instead.
+        normalized = self._normalize_messages_for_prompt_fallback(patched_messages)
 
         fallback_response = await self._chat_completion(normalized)
 
@@ -1480,14 +1609,7 @@ Guidelines:
             )
             return await self._chat_completion(messages)
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        if self.provider == "openrouter":
-            headers["HTTP-Referer"] = "https://github.com/bobmatnyc/mcp-vector-search"
-            headers["X-Title"] = "MCP Vector Search"
+        headers = self._build_request_headers()
 
         payload = {
             "model": self.model,
@@ -1516,35 +1638,43 @@ Guidelines:
             ) from e
 
         except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code
-            error_msg = f"{provider_name} API error (HTTP {status_code})"
-
-            # Try to get more details from the response
-            try:
-                error_body = e.response.json()
-                error_detail = error_body.get("error", {}).get("message", "")
-                if error_detail:
-                    error_msg = f"{error_msg}: {error_detail}"
-            except Exception:
-                pass
-
-            if status_code == 400:
-                error_msg = f"{error_msg}. Check model name and request format."
-            elif status_code == 401:
-                env_var = (
-                    "OPENAI_API_KEY"
-                    if self.provider == "openai"
-                    else "OPENROUTER_API_KEY"
-                )
-                error_msg = f"Invalid {provider_name} API key. Check {env_var}."
-            elif status_code == 429:
-                error_msg = f"{provider_name} API rate limit exceeded."
-            elif status_code >= 500:
-                error_msg = f"{provider_name} API server error."
-
+            error_msg = self._format_chat_with_tools_status_error(e)
             logger.error(error_msg)
             raise SearchError(error_msg) from e
 
         except Exception as e:
             logger.error(f"{provider_name} API request failed: {e}")
             raise SearchError(f"LLM request failed: {e}") from e
+
+    def _format_chat_with_tools_status_error(self, exc: httpx.HTTPStatusError) -> str:
+        """Format an HTTPStatusError using chat_with_tools' (terser) message style.
+
+        Distinct from :meth:`_format_http_status_error` to preserve the exact
+        legacy phrasing of the chat_with_tools error path.
+        """
+        provider_name = self.provider.capitalize()
+        status_code = exc.response.status_code
+        error_msg = f"{provider_name} API error (HTTP {status_code})"
+
+        # Try to get more details from the response
+        try:
+            error_body = exc.response.json()
+            error_detail = error_body.get("error", {}).get("message", "")
+            if error_detail:
+                error_msg = f"{error_msg}: {error_detail}"
+        except Exception:
+            pass
+
+        if status_code == 400:
+            error_msg = f"{error_msg}. Check model name and request format."
+        elif status_code == 401:
+            env_var = (
+                "OPENAI_API_KEY" if self.provider == "openai" else "OPENROUTER_API_KEY"
+            )
+            error_msg = f"Invalid {provider_name} API key. Check {env_var}."
+        elif status_code == 429:
+            error_msg = f"{provider_name} API rate limit exceeded."
+        elif status_code >= 500:
+            error_msg = f"{provider_name} API server error."
+
+        return error_msg
