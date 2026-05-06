@@ -13,6 +13,7 @@ elsewhere; this file covers only the boost/penalty/clamp logic that lives in
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -370,7 +371,9 @@ class TestNLPBoost:
     def test_no_nlp_metadata_returns_zero_boost(self, ranker: ResultRanker) -> None:
         """A result without any NLP fields produces a 0.0 boost."""
         result = _DuckResult(content="anything")
-        boost = ranker._calculate_nlp_boost(result, query_words={"foo"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, result), query_words={"foo"}
+        )
         assert boost == 0.0
 
     def test_missing_content_attr_short_circuits(self, ranker: ResultRanker) -> None:
@@ -379,7 +382,9 @@ class TestNLPBoost:
         class NoContent:
             pass
 
-        boost = ranker._calculate_nlp_boost(NoContent(), query_words={"foo"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, NoContent()), query_words={"foo"}
+        )
         assert boost == 0.0
 
     def test_nlp_keyword_string_metadata_boosts(self, ranker: ResultRanker) -> None:
@@ -389,7 +394,9 @@ class TestNLPBoost:
             nlp_keywords="alpha,beta,gamma",
         )
         # Two of three keywords match -> 2 * _BOOST_NLP_KEYWORD (0.02)
-        boost = ranker._calculate_nlp_boost(result, query_words={"alpha", "beta"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, result), query_words={"alpha", "beta"}
+        )
         assert boost == pytest.approx(2 * ResultRanker._BOOST_NLP_KEYWORD)
 
     def test_nlp_code_ref_list_metadata_boosts(self, ranker: ResultRanker) -> None:
@@ -398,7 +405,9 @@ class TestNLPBoost:
             content="x",
             nlp_code_refs=["search_engine", "indexer"],
         )
-        boost = ranker._calculate_nlp_boost(result, query_words={"search"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, result), query_words={"search"}
+        )
         # Only "search_engine" matches -> 1 * _BOOST_NLP_CODE_REF
         assert boost == pytest.approx(ResultRanker._BOOST_NLP_CODE_REF)
 
@@ -407,7 +416,9 @@ class TestNLPBoost:
             content="x",
             nlp_technical_terms="LanceDB,KuzuDB,SQLite",
         )
-        boost = ranker._calculate_nlp_boost(result, query_words={"lancedb"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, result), query_words={"lancedb"}
+        )
         assert boost == pytest.approx(ResultRanker._BOOST_NLP_TECHNICAL_TERM)
 
     def test_nlp_combined_boosts_sum(self, ranker: ResultRanker) -> None:
@@ -418,7 +429,9 @@ class TestNLPBoost:
             nlp_code_refs="search_index",
             nlp_technical_terms="SearchService",
         )
-        boost = ranker._calculate_nlp_boost(result, query_words={"search"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, result), query_words={"search"}
+        )
         expected = (
             ResultRanker._BOOST_NLP_KEYWORD
             + ResultRanker._BOOST_NLP_CODE_REF
@@ -433,7 +446,9 @@ class TestNLPBoost:
             nlp_code_refs="indexer",
             nlp_technical_terms="LanceDB",
         )
-        boost = ranker._calculate_nlp_boost(result, query_words={"zzz"})
+        boost = ranker._calculate_nlp_boost(
+            cast(SearchResult, result), query_words={"zzz"}
+        )
         assert boost == 0.0
 
     def test_pydantic_search_result_no_nlp_boost(self, ranker: ResultRanker) -> None:
