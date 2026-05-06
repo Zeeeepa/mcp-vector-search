@@ -129,11 +129,11 @@ function validateEmail(email) {
 
         # Test search
         request = MockRequest("search_code", {"query": "hello world", "limit": 5})
-        result = await server.call_tool(request)
+        result = await server.call_tool(request)  # type: ignore[arg-type]
 
         assert not result.isError
         assert len(result.content) > 0
-        assert "hello world" in result.content[0].text.lower()
+        assert "hello world" in result.content[0].text.lower()  # type: ignore[union-attr]
 
         await server.cleanup()
 
@@ -156,11 +156,11 @@ function validateEmail(email) {
 
         # Test status
         request = MockRequest("get_project_status", {})
-        result = await server.call_tool(request)
+        result = await server.call_tool(request)  # type: ignore[arg-type]
 
         assert not result.isError
         assert len(result.content) > 0
-        status_text = result.content[0].text
+        status_text = result.content[0].text  # type: ignore[union-attr]
         assert "Project Status" in status_text
         assert str(initialized_project) in status_text
 
