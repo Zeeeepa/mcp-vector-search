@@ -129,8 +129,10 @@ class ResultRanker:
             # Factor 8: NLP entity matches (boost results with matching NLP-extracted terms)
             score += self._calculate_nlp_boost(result, query_words)
 
-            # Ensure score doesn't exceed 1.0
-            result.similarity_score = min(1.0, score)
+            # Clamp score to valid [0.0, 1.0] range — penalties (test files,
+            # deep paths, boilerplate) can drive score negative; upstream
+            # callers and assertions require non-negative similarity.
+            result.similarity_score = max(0.0, min(1.0, score))
 
         # Sort by enhanced similarity score
         results.sort(key=lambda r: r.similarity_score, reverse=True)

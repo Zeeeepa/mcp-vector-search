@@ -232,6 +232,39 @@ class IndexPipeline:
         metrics_tracker = get_metrics_tracker()
         file_batch_size = self.batch_size
 
+        # Ensure sentinel is always delivered, even if this producer raises.
+        # Without this guarantee the consumer hangs forever waiting for a
+        # sentinel from a producer that crashed mid-parse (observed when
+        # backends are uninitialized in unit-test environments).
+        try:
+            await self._chunk_producer_body(
+                producer_id,
+                file_slice,
+                effective_num_producers,
+                phase_start_time,
+                metrics_tracker,
+                file_batch_size,
+            )
+        finally:
+            # Each producer sends its own sentinel so the consumer knows
+            # when ALL are done — even on exception.
+            try:
+                if self.chunk_queue is not None:
+                    await self.chunk_queue.put(None)
+            except Exception:
+                pass
+
+    async def _chunk_producer_body(
+        self,
+        producer_id: int,
+        file_slice: list[tuple[Path, str, str]],
+        effective_num_producers: int,
+        phase_start_time: float,
+        metrics_tracker,
+        file_batch_size: int,
+    ) -> None:
+        """Body of :meth:`_chunk_producer` (extracted so the wrapper can
+        guarantee sentinel delivery via ``finally``)."""
         with metrics_tracker.phase("parsing") as parsing_metrics:
             for batch_start in range(0, len(file_slice), file_batch_size):
                 # Check if pipeline was cancelled (consumer crashed)
@@ -385,8 +418,8 @@ class IndexPipeline:
             f"Producer {producer_id} complete: processed slice of {len(file_slice)} files"
         )
 
-        # Each producer sends its own sentinel so the consumer knows when ALL are done
-        await self.chunk_queue.put(None)
+        # Sentinel delivery is now handled by the _chunk_producer wrapper's
+        # finally clause (so it fires even when this body raises).
 
     # ------------------------------------------------------------------
     # Consumer

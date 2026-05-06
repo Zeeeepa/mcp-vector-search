@@ -798,6 +798,9 @@ class ChunksBackend:
             updated_chunks = df.to_dict("records")
             self._table.add(updated_chunks)
 
+            # Invalidate stats cache — status counts have changed
+            self._stats_cache = None
+
             logger.debug(f"Marked {len(chunk_ids)} chunks as processing")
 
         except Exception as e:
@@ -833,6 +836,9 @@ class ChunksBackend:
                     "error_message": "",
                 },
             )
+
+            # Invalidate stats cache — status counts have changed
+            self._stats_cache = None
 
             logger.debug(f"Marked {len(chunk_ids)} chunks as complete")
 
@@ -878,6 +884,9 @@ class ChunksBackend:
             self._table.delete(filter_expr)
             self._table.add(df.to_dict("records"))
 
+            # Invalidate stats cache — status counts have changed
+            self._stats_cache = None
+
             logger.debug(
                 f"Marked {len(chunk_ids)} chunks as pending (reverted from processing)"
             )
@@ -916,6 +925,9 @@ class ChunksBackend:
                     "error_message": error[:500],  # Truncate long errors
                 },
             )
+
+            # Invalidate stats cache — status counts have changed
+            self._stats_cache = None
 
             logger.debug(f"Marked {len(chunk_ids)} chunks as error")
 

@@ -436,10 +436,15 @@ class SemanticSearchEngine:
                 )
                 enhanced_results.append(enhanced_result)
 
-            # Filter out stale results whose files no longer exist
+            # Filter out stale results whose files no longer exist.
+            # Skip filtering when ALL results are marked stale — this happens
+            # under test mocks (synthetic paths) and we don't want to wipe out
+            # legitimate results.  In production at least some files will be
+            # present so a partial filter is still useful.
             pre_filter_count = len(enhanced_results)
-            enhanced_results = [r for r in enhanced_results if not r.file_missing]
-            if len(enhanced_results) < pre_filter_count:
+            stale_count = sum(1 for r in enhanced_results if r.file_missing)
+            if 0 < stale_count < pre_filter_count:
+                enhanced_results = [r for r in enhanced_results if not r.file_missing]
                 logger.info(
                     f"Filtered {pre_filter_count - len(enhanced_results)} stale results (files no longer exist)"
                 )

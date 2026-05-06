@@ -1,6 +1,5 @@
 """Unit tests for pipeline parallelism in index_project()."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -218,17 +217,32 @@ class TestPipelineParallelism:
             file_extensions=[".py"],
         )
 
-        # Mock the internal methods
+        # Mock the internal methods.  The current pipeline path uses
+        # get_all_indexed_file_hashes() (returning current hashes) for change
+        # detection, so we mock it to claim every file is already up to date.
+        # We also mock delete_files_batch to avoid backend-not-initialized
+        # errors in this unit-test environment.
+        from mcp_vector_search.core.chunks_backend import compute_file_hash
+
+        files = [
+            temp_project_dir / "test1.py",
+            temp_project_dir / "test2.py",
+        ]
+        # Use real hashes so the change-detection loop sees no diff and skips
+        # the parsing pipeline (returns 0,0,0 immediately).
+        indexed_hashes = {
+            str(fp.relative_to(temp_project_dir)): compute_file_hash(fp) for fp in files
+        }
+
         with patch.object(
             indexer.file_discovery,
             "find_indexable_files",
-            return_value=[
-                temp_project_dir / "test1.py",
-                temp_project_dir / "test2.py",
-            ],
+            return_value=files,
         ):
             with patch.object(
-                indexer.chunks_backend, "file_changed", return_value=False
+                indexer.chunks_backend,
+                "get_all_indexed_file_hashes",
+                new=AsyncMock(return_value=indexed_hashes),
             ):
                 # Call should return (files_indexed, chunks_created, chunks_embedded)
                 result = await indexer._index_with_pipeline(force_reindex=False)
