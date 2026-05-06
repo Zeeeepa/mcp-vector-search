@@ -555,6 +555,116 @@ class LanceVectorDatabase:
         self._db = None
         logger.debug("LanceDB connections closed")
 
+    @staticmethod
+    def _join_optional_list(chunk: CodeChunk, attr: str) -> str:
+        """Return comma-joined value of ``chunk.attr`` if present and truthy.
+
+        Used to safely serialize optional list attributes that may not be set
+        on every CodeChunk (e.g. nlp_keywords, calls).
+        """
+        value = getattr(chunk, attr, None)
+        return ",".join(value) if value else ""
+
+    @staticmethod
+    def _schema_defaults() -> dict[str, Any]:
+        """Default values for nullable schema fields, used when a chunk lacks
+        explicit metrics. Prevents "Field not found in target schema" errors."""
+        return {
+            # Quality metrics (nullable in schema)
+            "cognitive_complexity": None,
+            "cyclomatic_complexity": None,
+            "max_nesting_depth": None,
+            "parameter_count": None,
+            "lines_of_code": None,
+            "complexity_grade": "",
+            "code_smells": "[]",
+            "smell_count": 0,
+            "quality_score": 0,
+        }
+
+    def _build_chunk_metadata(self, chunk: CodeChunk) -> dict[str, Any]:
+        """Build the LanceDB metadata dictionary for a single chunk.
+
+        Mirrors the prior inline construction in ``add_chunks`` exactly —
+        no behaviour change.
+        """
+        return {
+            "file_path": str(chunk.file_path),
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+            "language": chunk.language,
+            "chunk_type": chunk.chunk_type,
+            "function_name": chunk.function_name or "",
+            "class_name": chunk.class_name or "",
+            "docstring": chunk.docstring or "",
+            "imports": (
+                orjson.dumps(chunk.imports).decode() if chunk.imports else "[]"
+            ),
+            "calls": self._join_optional_list(chunk, "calls"),
+            "inherits_from": self._join_optional_list(chunk, "inherits_from"),
+            "complexity_score": chunk.complexity_score,
+            "chunk_id": chunk.chunk_id or chunk.id,
+            "parent_chunk_id": chunk.parent_chunk_id or "",
+            "child_chunk_ids": (
+                ",".join(chunk.child_chunk_ids) if chunk.child_chunk_ids else ""
+            ),
+            "chunk_depth": chunk.chunk_depth,
+            "decorators": (",".join(chunk.decorators) if chunk.decorators else ""),
+            "return_type": chunk.return_type or "",
+            "subproject_name": chunk.subproject_name or "",
+            "subproject_path": chunk.subproject_path or "",
+            # NLP-extracted entities
+            "nlp_keywords": self._join_optional_list(chunk, "nlp_keywords"),
+            "nlp_code_refs": self._join_optional_list(chunk, "nlp_code_refs"),
+            "nlp_technical_terms": self._join_optional_list(
+                chunk, "nlp_technical_terms"
+            ),
+            # Git blame metadata
+            "last_author": chunk.last_author or "",
+            "last_modified": chunk.last_modified or "",
+            "commit_hash": chunk.commit_hash or "",
+        }
+
+    def _build_chunk_record(
+        self,
+        chunk: CodeChunk,
+        embedding: list[float],
+        metrics: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build a single LanceDB record dict from a chunk + embedding."""
+        metadata = self._build_chunk_metadata(chunk)
+
+        # Add structural metrics if provided
+        if metrics and chunk.chunk_id in metrics:
+            metadata.update(metrics[chunk.chunk_id])
+
+        # Create record with embedding vector
+        return {
+            "id": chunk.chunk_id or chunk.id,
+            "vector": embedding,
+            "content": chunk.content,
+            **self._schema_defaults(),  # Add defaults first
+            **metadata,  # Override with actual values
+        }
+
+    async def _generate_embeddings(
+        self, embedding_texts: list[str]
+    ) -> list[list[float]]:
+        """Run the embedding function in a thread pool, with PyO3 panic
+        handling for shutdown scenarios."""
+        import asyncio
+
+        try:
+            return await asyncio.to_thread(self.embedding_function, embedding_texts)
+        except BaseException as e:
+            # PyO3 panics inherit from BaseException, not Exception
+            if "Python interpreter is not initialized" in str(e):
+                logger.warning("Embedding interrupted during shutdown")
+                raise RuntimeError(
+                    "Embedding interrupted during Python shutdown"
+                ) from e
+            raise
+
     async def add_chunks(
         self,
         chunks: list[CodeChunk],
@@ -589,116 +699,17 @@ class LanceVectorDatabase:
             if embeddings is None:
                 # Run embedding generation in thread pool to avoid blocking event loop
                 # This allows other async operations to proceed during CPU-intensive embedding
-                import asyncio
-
-                try:
-                    embeddings = await asyncio.to_thread(
-                        self.embedding_function, embedding_texts
-                    )
-                except BaseException as e:
-                    # PyO3 panics inherit from BaseException, not Exception
-                    if "Python interpreter is not initialized" in str(e):
-                        logger.warning("Embedding interrupted during shutdown")
-                        raise RuntimeError(
-                            "Embedding interrupted during Python shutdown"
-                        ) from e
-                    raise
+                embeddings = await self._generate_embeddings(embedding_texts)
 
             # Convert chunks to LanceDB records
             if embeddings is None:
                 raise RuntimeError(
                     "Embeddings are not available; cannot build LanceDB records"
                 )
-            records = []
-            for chunk, embedding in zip(chunks, embeddings, strict=True):
-                # Build metadata dict (same as ChromaDB)
-                metadata = {
-                    "file_path": str(chunk.file_path),
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "language": chunk.language,
-                    "chunk_type": chunk.chunk_type,
-                    "function_name": chunk.function_name or "",
-                    "class_name": chunk.class_name or "",
-                    "docstring": chunk.docstring or "",
-                    "imports": (
-                        orjson.dumps(chunk.imports).decode() if chunk.imports else "[]"
-                    ),
-                    "calls": (
-                        ",".join(chunk.calls)
-                        if hasattr(chunk, "calls") and chunk.calls
-                        else ""
-                    ),
-                    "inherits_from": (
-                        ",".join(chunk.inherits_from)
-                        if hasattr(chunk, "inherits_from") and chunk.inherits_from
-                        else ""
-                    ),
-                    "complexity_score": chunk.complexity_score,
-                    "chunk_id": chunk.chunk_id or chunk.id,
-                    "parent_chunk_id": chunk.parent_chunk_id or "",
-                    "child_chunk_ids": (
-                        ",".join(chunk.child_chunk_ids) if chunk.child_chunk_ids else ""
-                    ),
-                    "chunk_depth": chunk.chunk_depth,
-                    "decorators": (
-                        ",".join(chunk.decorators) if chunk.decorators else ""
-                    ),
-                    "return_type": chunk.return_type or "",
-                    "subproject_name": chunk.subproject_name or "",
-                    "subproject_path": chunk.subproject_path or "",
-                    # NLP-extracted entities
-                    "nlp_keywords": (
-                        ",".join(chunk.nlp_keywords)
-                        if hasattr(chunk, "nlp_keywords") and chunk.nlp_keywords
-                        else ""
-                    ),
-                    "nlp_code_refs": (
-                        ",".join(chunk.nlp_code_refs)
-                        if hasattr(chunk, "nlp_code_refs") and chunk.nlp_code_refs
-                        else ""
-                    ),
-                    "nlp_technical_terms": (
-                        ",".join(chunk.nlp_technical_terms)
-                        if hasattr(chunk, "nlp_technical_terms")
-                        and chunk.nlp_technical_terms
-                        else ""
-                    ),
-                    # Git blame metadata
-                    "last_author": chunk.last_author or "",
-                    "last_modified": chunk.last_modified or "",
-                    "commit_hash": chunk.commit_hash or "",
-                }
-
-                # Add structural metrics if provided
-                if metrics and chunk.chunk_id in metrics:
-                    chunk_metrics = metrics[chunk.chunk_id]
-                    metadata.update(chunk_metrics)
-
-                # Ensure all schema fields are present with defaults
-                # This prevents "Field not found in target schema" errors
-                schema_defaults = {
-                    # Quality metrics (nullable in schema)
-                    "cognitive_complexity": None,
-                    "cyclomatic_complexity": None,
-                    "max_nesting_depth": None,
-                    "parameter_count": None,
-                    "lines_of_code": None,
-                    "complexity_grade": "",
-                    "code_smells": "[]",
-                    "smell_count": 0,
-                    "quality_score": 0,
-                }
-
-                # Create record with embedding vector
-                record = {
-                    "id": chunk.chunk_id or chunk.id,
-                    "vector": embedding,
-                    "content": chunk.content,
-                    **schema_defaults,  # Add defaults first
-                    **metadata,  # Override with actual values
-                }
-                records.append(record)
+            records = [
+                self._build_chunk_record(chunk, embedding, metrics)
+                for chunk, embedding in zip(chunks, embeddings, strict=True)
+            ]
 
             # Add to write buffer instead of immediate insertion
             self._write_buffer.extend(records)
@@ -831,65 +842,18 @@ class LanceVectorDatabase:
                         f"falling back to defaults): {ann_err}"
                     )
 
-            # Apply metadata filters if provided
-            filter_clauses: list[str] = []
-            if filters:
-                for key, value in filters.items():
-                    if value is not None:
-                        # Handle different filter types
-                        if isinstance(value, str):
-                            filter_clauses.append(f"{key} = '{value}'")
-                        elif isinstance(value, list):
-                            # Support IN queries
-                            values_str = ", ".join(f"'{v}'" for v in value)
-                            filter_clauses.append(f"{key} IN ({values_str})")
-                        else:
-                            filter_clauses.append(f"{key} = {value}")
-
-            # Append raw WHERE fragment if provided (e.g. test-only filter)
-            if where_extra:
-                filter_clauses.append(where_extra)
-
-            if filter_clauses:
-                where_clause = " AND ".join(filter_clauses)
+            # Build & apply WHERE clause (metadata filters + raw fragment)
+            where_clause = self._build_where_clause(filters, where_extra)
+            if where_clause:
                 search = search.where(where_clause)
 
             # Execute search
             results = search.to_list()
 
             # Convert to SearchResult format
-            search_results = []
-            for rank, result in enumerate(results):
-                # LanceDB returns _distance (cosine distance, 0-2 range)
-                # Convert to similarity: 0 distance -> 1.0 similarity, 2 distance -> 0.0
-                distance = result.get("_distance", 0.0)
-                similarity = max(0.0, 1.0 - (distance / 2.0))
-
-                # Filter by similarity threshold
-                if similarity < similarity_threshold:
-                    continue
-
-                # Create SearchResult
-                search_result = SearchResult(
-                    content=result["content"],
-                    file_path=Path(result["file_path"]),
-                    start_line=result["start_line"],
-                    end_line=result["end_line"],
-                    language=result["language"],
-                    similarity_score=similarity,
-                    rank=rank + 1,
-                    chunk_type=result.get("chunk_type", "code"),
-                    function_name=result.get("function_name") or None,
-                    class_name=result.get("class_name") or None,
-                    # Git blame metadata
-                    last_author=result.get("last_author") or None,
-                    last_modified=result.get("last_modified") or None,
-                    commit_hash=result.get("commit_hash") or None,
-                    # Monorepo support
-                    subproject_name=result.get("subproject_name") or None,
-                    chunk_id=result.get("chunk_id") or None,
-                )
-                search_results.append(search_result)
+            search_results = self._results_to_search_results(
+                results, similarity_threshold
+            )
 
             # Cache results
             self._add_to_search_cache(cache_key, search_results)
@@ -1277,63 +1241,79 @@ class LanceVectorDatabase:
             yield chunks
             offset += batch_size
 
-    def _batch_dict_to_chunk(
-        self, batch_dict: dict, i: int, num_rows: int
-    ) -> CodeChunk:
-        """Convert Arrow batch dictionary row to CodeChunk."""
-        # Handle imports field (list/numpy array of JSON strings or legacy comma-separated string)
-        imports_raw = batch_dict.get("imports", [[]] * num_rows)[i]
-
+    @staticmethod
+    def _parse_imports_field(imports_raw: Any) -> list:
+        """Parse imports field from row/batch (list/array of JSON strings or
+        legacy comma-separated string) into a list."""
         if isinstance(imports_raw, (list, np.ndarray)):
             # New format: list or numpy array of JSON strings
-            imports = []
+            imports: list = []
             for item in imports_raw:
                 try:
                     imports.append(json.loads(item))
                 except (json.JSONDecodeError, TypeError):
                     imports.append(item)  # Keep as string if not valid JSON
-        elif isinstance(imports_raw, str):
+            return imports
+        if isinstance(imports_raw, str):
             # Legacy format: comma-separated string
-            imports = imports_raw.split(",") if imports_raw else []
-        else:
-            # Unknown type - default to empty
-            imports = []
+            return imports_raw.split(",") if imports_raw else []
+        # Unknown type - default to empty
+        return []
 
-        # Handle child_chunk_ids field (list/numpy array or legacy comma-separated string)
-        child_ids_raw = batch_dict.get("child_chunk_ids", [[]] * num_rows)[i]
-        if isinstance(child_ids_raw, (list, np.ndarray)):
-            child_chunk_ids = list(child_ids_raw)
-        elif isinstance(child_ids_raw, str):
-            child_chunk_ids = child_ids_raw.split(",") if child_ids_raw else []
-        else:
-            child_chunk_ids = []
+    @staticmethod
+    def _parse_list_field(raw: Any) -> list:
+        """Parse a list-or-comma-separated-string field into a list."""
+        if isinstance(raw, (list, np.ndarray)):
+            return list(raw)
+        if isinstance(raw, str):
+            return raw.split(",") if raw else []
+        return []
 
-        # Handle decorators field (list/numpy array or legacy comma-separated string)
-        decorators_raw = batch_dict.get("decorators", [[]] * num_rows)[i]
-        if isinstance(decorators_raw, (list, np.ndarray)):
-            decorators = list(decorators_raw)
-        elif isinstance(decorators_raw, str):
-            decorators = decorators_raw.split(",") if decorators_raw else []
-        else:
-            decorators = []
+    @staticmethod
+    def _derive_function_class_names(
+        chunk_type: str,
+        raw_name: str | None,
+        raw_hierarchy: str,
+        fn_col: str | None,
+        cn_col: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Derive (function_name, class_name) from row/batch fields.
 
-        # Handle calls field (list/numpy array or legacy comma-separated string)
-        calls_raw = batch_dict.get("calls", [[]] * num_rows)[i]
-        if isinstance(calls_raw, (list, np.ndarray)):
-            calls = list(calls_raw)
-        elif isinstance(calls_raw, str):
-            calls = calls_raw.split(",") if calls_raw else []
-        else:
-            calls = []
+        If explicit ``function_name``/``class_name`` columns exist (legacy
+        schema), use them directly. Otherwise derive from ``name`` +
+        ``hierarchy_path`` + ``chunk_type`` (new schema).
+        """
+        if fn_col is not None or cn_col is not None:
+            # Legacy schema with explicit columns — use as-is
+            return fn_col, cn_col
+        # New schema: derive from name + hierarchy_path + chunk_type
+        if chunk_type == "class":
+            return None, raw_name
+        if chunk_type in ("function", "method"):
+            # hierarchy_path is "ClassName.method" for class methods
+            if raw_hierarchy and "." in raw_hierarchy:
+                return raw_name, raw_hierarchy.split(".")[0]
+            return raw_name, None
+        return None, None
 
-        # Handle inherits_from field (list/numpy array or legacy comma-separated string)
-        inherits_raw = batch_dict.get("inherits_from", [[]] * num_rows)[i]
-        if isinstance(inherits_raw, (list, np.ndarray)):
-            inherits_from = list(inherits_raw)
-        elif isinstance(inherits_raw, str):
-            inherits_from = inherits_raw.split(",") if inherits_raw else []
-        else:
-            inherits_from = []
+    def _batch_dict_to_chunk(
+        self, batch_dict: dict, i: int, num_rows: int
+    ) -> CodeChunk:
+        """Convert Arrow batch dictionary row to CodeChunk."""
+        # Parse list-style fields (handles list/array/legacy-string formats)
+        imports = self._parse_imports_field(
+            batch_dict.get("imports", [[]] * num_rows)[i]
+        )
+        child_chunk_ids = self._parse_list_field(
+            batch_dict.get("child_chunk_ids", [[]] * num_rows)[i]
+        )
+        decorators = self._parse_list_field(
+            batch_dict.get("decorators", [[]] * num_rows)[i]
+        )
+        calls = self._parse_list_field(batch_dict.get("calls", [[]] * num_rows)[i])
+        inherits_from = self._parse_list_field(
+            batch_dict.get("inherits_from", [[]] * num_rows)[i]
+        )
 
         # Derive function_name and class_name from the LanceDB schema.
         # LanceDB stores: `name` (function/class name), `hierarchy_path`
@@ -1348,25 +1328,9 @@ class LanceVectorDatabase:
         _fn_col = batch_dict.get("function_name", [None] * num_rows)[i] or None
         _cn_col = batch_dict.get("class_name", [None] * num_rows)[i] or None
 
-        if _fn_col is not None or _cn_col is not None:
-            # Legacy schema with explicit columns — use as-is
-            derived_function_name = _fn_col
-            derived_class_name = _cn_col
-        else:
-            # New schema: derive from name + hierarchy_path + chunk_type
-            if raw_chunk_type == "class":
-                derived_function_name = None
-                derived_class_name = raw_name
-            elif raw_chunk_type in ("function", "method"):
-                derived_function_name = raw_name
-                # hierarchy_path is "ClassName.method" for class methods
-                if raw_hierarchy and "." in raw_hierarchy:
-                    derived_class_name = raw_hierarchy.split(".")[0]
-                else:
-                    derived_class_name = None
-            else:
-                derived_function_name = None
-                derived_class_name = None
+        derived_function_name, derived_class_name = self._derive_function_class_names(
+            raw_chunk_type, raw_name, raw_hierarchy, _fn_col, _cn_col
+        )
 
         return CodeChunk(
             content=batch_dict["content"][i],
@@ -1397,58 +1361,12 @@ class LanceVectorDatabase:
 
     def _row_to_chunk(self, row: Any) -> CodeChunk:
         """Convert Pandas DataFrame row to CodeChunk."""
-        # Handle imports field (list/numpy array of JSON strings or legacy comma-separated string)
-        imports_raw = row.get("imports", [])
-        if isinstance(imports_raw, (list, np.ndarray)):
-            # New format: list or numpy array of JSON strings
-            imports = []
-            for item in imports_raw:
-                try:
-                    imports.append(json.loads(item))
-                except (json.JSONDecodeError, TypeError):
-                    imports.append(item)  # Keep as string if not valid JSON
-        elif isinstance(imports_raw, str):
-            # Legacy format: comma-separated string
-            imports = imports_raw.split(",") if imports_raw else []
-        else:
-            # Unknown type - default to empty
-            imports = []
-
-        # Handle child_chunk_ids field (list/numpy array or legacy comma-separated string)
-        child_ids_raw = row.get("child_chunk_ids", [])
-        if isinstance(child_ids_raw, (list, np.ndarray)):
-            child_chunk_ids = list(child_ids_raw)
-        elif isinstance(child_ids_raw, str):
-            child_chunk_ids = child_ids_raw.split(",") if child_ids_raw else []
-        else:
-            child_chunk_ids = []
-
-        # Handle decorators field (list/numpy array or legacy comma-separated string)
-        decorators_raw = row.get("decorators", [])
-        if isinstance(decorators_raw, (list, np.ndarray)):
-            decorators = list(decorators_raw)
-        elif isinstance(decorators_raw, str):
-            decorators = decorators_raw.split(",") if decorators_raw else []
-        else:
-            decorators = []
-
-        # Handle calls field (list/numpy array or legacy comma-separated string)
-        calls_raw = row.get("calls", [])
-        if isinstance(calls_raw, (list, np.ndarray)):
-            calls = list(calls_raw)
-        elif isinstance(calls_raw, str):
-            calls = calls_raw.split(",") if calls_raw else []
-        else:
-            calls = []
-
-        # Handle inherits_from field (list/numpy array or legacy comma-separated string)
-        inherits_raw = row.get("inherits_from", [])
-        if isinstance(inherits_raw, (list, np.ndarray)):
-            inherits_from = list(inherits_raw)
-        elif isinstance(inherits_raw, str):
-            inherits_from = inherits_raw.split(",") if inherits_raw else []
-        else:
-            inherits_from = []
+        # Parse list-style fields (handles list/array/legacy-string formats)
+        imports = self._parse_imports_field(row.get("imports", []))
+        child_chunk_ids = self._parse_list_field(row.get("child_chunk_ids", []))
+        decorators = self._parse_list_field(row.get("decorators", []))
+        calls = self._parse_list_field(row.get("calls", []))
+        inherits_from = self._parse_list_field(row.get("inherits_from", []))
 
         # Derive function_name and class_name (same logic as _batch_dict_to_chunk)
         _row_chunk_type = row.get("chunk_type", "code")
@@ -1457,23 +1375,9 @@ class LanceVectorDatabase:
         _fn_col = row.get("function_name") or None
         _cn_col = row.get("class_name") or None
 
-        if _fn_col is not None or _cn_col is not None:
-            derived_function_name = _fn_col
-            derived_class_name = _cn_col
-        else:
-            if _row_chunk_type == "class":
-                derived_function_name = None
-                derived_class_name = _row_name
-            elif _row_chunk_type in ("function", "method"):
-                derived_function_name = _row_name
-                derived_class_name = (
-                    _row_hierarchy.split(".")[0]
-                    if _row_hierarchy and "." in _row_hierarchy
-                    else None
-                )
-            else:
-                derived_function_name = None
-                derived_class_name = None
+        derived_function_name, derived_class_name = self._derive_function_class_names(
+            _row_chunk_type, _row_name, _row_hierarchy, _fn_col, _cn_col
+        )
 
         return CodeChunk(
             content=row["content"],

@@ -542,9 +542,10 @@ class SemanticIndexer:
         ):
             return self.database._collection._embedding_function.model_name
         elif hasattr(self.database, "embedding_function") and hasattr(
-            self.database.embedding_function, "model_name"
+            self.database.embedding_function,
+            "model_name",  # type: ignore[attr-defined]
         ):
-            return self.database.embedding_function.model_name
+            return self.database.embedding_function.model_name  # type: ignore[attr-defined]
 
         # Fallback: extract from model name if available
         # This handles cases where the embedding function doesn't expose model_name
@@ -686,10 +687,10 @@ class SemanticIndexer:
                     f"Detected {len(detected_moves)} file move(s), updating metadata..."
                 )
                 for old_path, new_path, _file_hash in detected_moves:
-                    chunks_updated = await self.chunks_backend.update_file_path(
+                    chunks_updated = await self.chunks_backend.update_file_path(  # type: ignore[union-attr]
                         old_path, new_path
                     )
-                    vectors_updated = await self.vectors_backend.update_file_path(
+                    vectors_updated = await self.vectors_backend.update_file_path(  # type: ignore[union-attr]
                         old_path, new_path
                     )
                     logger.info(
@@ -698,7 +699,7 @@ class SemanticIndexer:
                     )
                 # Reload so change detection sees updated paths
                 indexed_file_hashes = (
-                    await self.chunks_backend.get_all_indexed_file_hashes()
+                    await self.chunks_backend.get_all_indexed_file_hashes()  # type: ignore[union-attr]
                 )
 
             # Change detection: compare on-disk hashes to indexed hashes.
@@ -778,8 +779,8 @@ class SemanticIndexer:
         pipeline = IndexPipeline(
             files_to_process=files_to_process,
             files_to_index=files_to_index,
-            chunks_backend=self.chunks_backend,
-            vectors_backend=self.vectors_backend,
+            chunks_backend=self.chunks_backend,  # type: ignore[arg-type]
+            vectors_backend=self.vectors_backend,  # type: ignore[arg-type]
             database=self.database,
             chunk_processor=self.chunk_processor,
             memory_monitor=self.memory_monitor,
@@ -838,8 +839,8 @@ class SemanticIndexer:
         """
         return await run_phase1_chunking(
             files=files,
-            chunks_backend=self.chunks_backend,
-            vectors_backend=self.vectors_backend,
+            chunks_backend=self.chunks_backend,  # type: ignore[arg-type]
+            vectors_backend=self.vectors_backend,  # type: ignore[arg-type]
             project_root=self.project_root,
             chunk_processor=self.chunk_processor,
             memory_monitor=self.memory_monitor,
@@ -898,8 +899,8 @@ class SemanticIndexer:
             Tuple of (chunks_embedded, batches_processed)
         """
         return await run_phase2_embedding(
-            chunks_backend=self.chunks_backend,
-            vectors_backend=self.vectors_backend,
+            chunks_backend=self.chunks_backend,  # type: ignore[arg-type]
+            vectors_backend=self.vectors_backend,  # type: ignore[arg-type]
             database=self.database,
             memory_monitor=self.memory_monitor,
             progress_tracker=self.progress_tracker,
