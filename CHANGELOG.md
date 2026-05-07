@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-05-07
+
+### Changed
+
+- **`mvs index kg` now runs incrementally by default** — Previously the command exited with "Knowledge graph already exists – use --force to rebuild" whenever the graph had entities and neither `--force` nor `--incremental` was passed. The command now runs an incremental diff automatically when `kg_metadata.json` contains a `file_hashes` baseline (written after each successful build). `--force` still triggers a full teardown + rebuild (unchanged).
+
+### Added
+
+- **Automatic rebuild for moved files** — When files are moved, the old path's nodes and edges are deleted and the new path's entities are rebuilt automatically during the default incremental pass.
+- **Up-to-date short-circuit** — When no files have changed, the command prints "✓ Knowledge graph is up to date (N entities)" and exits cleanly with no error noise.
+
+### Fixed
+
+- **`delete_entities_for_files()` dangling edges** — The function now correctly deletes all edge types (`RELATED_TO`, `DESCRIBES`, `HAS_TOPIC`, `AUTHORED`, `MODIFIED`, `WROTE`, `PART_OF`, `HAS_TAG`, `DEMONSTRATES`, `LINKS_TO`), preventing dangling edges from accumulating in KuzuDB after file moves or deletions.
+
 ## [3.0.57] - 2026-03-02
 
 ### Fixed
