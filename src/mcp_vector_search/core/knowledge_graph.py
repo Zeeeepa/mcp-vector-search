@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import kuzu
 from loguru import logger
@@ -326,7 +326,9 @@ class KnowledgeGraph:
             raise RuntimeError("Knowledge graph not initialized")
         return self.conn
 
-    def _execute_query(self, query: str, params: dict | None = None):
+    def _execute_query(
+        self, query: str, params: dict | None = None
+    ) -> "kuzu.QueryResult":
         """Execute Kuzu query synchronously with thread lock.
 
         Runs Kuzu operations directly on the calling thread (main asyncio thread)
@@ -343,7 +345,7 @@ class KnowledgeGraph:
         if self.conn is None:
             raise RuntimeError("Knowledge graph not initialized")
         with self._kuzu_lock:
-            return self._conn.execute(query, params or {})
+            return cast("kuzu.QueryResult", self._conn.execute(query, params or {}))
 
     def _create_schema(self):
         """Create Kuzu schema for code entities, doc sections, and relationships."""
@@ -351,7 +353,7 @@ class KnowledgeGraph:
             raise RuntimeError("Knowledge graph not initialized")
         # Create CodeEntity node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS CodeEntity (
                     id STRING PRIMARY KEY,
@@ -370,7 +372,7 @@ class KnowledgeGraph:
 
         # Create DocSection node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS DocSection (
                     id STRING PRIMARY KEY,
@@ -392,7 +394,7 @@ class KnowledgeGraph:
 
         # Create Tag node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Tag (
                     id STRING PRIMARY KEY,
@@ -407,7 +409,7 @@ class KnowledgeGraph:
 
         # Create Document node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Document (
                     id STRING PRIMARY KEY,
@@ -430,7 +432,7 @@ class KnowledgeGraph:
         # Additive migration: add frontmatter column if it does not yet exist
         # (for KGs built before this column was added)
         try:
-            self._conn.execute(
+            self._execute_query(
                 "ALTER TABLE Document ADD frontmatter STRING DEFAULT '{}'"
             )
             logger.debug("Migrated Document table: added frontmatter column")
@@ -440,7 +442,7 @@ class KnowledgeGraph:
 
         # Create Topic node table for hierarchical taxonomy
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Topic (
                     id STRING PRIMARY KEY,
@@ -457,7 +459,7 @@ class KnowledgeGraph:
         code_relationship_types = ["CALLS", "IMPORTS", "INHERITS", "CONTAINS"]
         for rel_type in code_relationship_types:
             try:
-                self._conn.execute(
+                self._execute_query(
                     f"""
                     CREATE REL TABLE IF NOT EXISTS {rel_type} (
                         FROM CodeEntity TO CodeEntity,
@@ -474,7 +476,7 @@ class KnowledgeGraph:
 
         # Create relationship tables for doc-to-doc relationships
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS FOLLOWS (
                     FROM DocSection TO DocSection,
@@ -490,7 +492,7 @@ class KnowledgeGraph:
 
         # Create relationship tables for doc-to-code relationships
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS REFERENCES (
                     FROM DocSection TO CodeEntity,
@@ -505,7 +507,7 @@ class KnowledgeGraph:
             logger.debug(f"REFERENCES table creation: {e}")
 
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS DOCUMENTS (
                     FROM DocSection TO CodeEntity,
@@ -521,7 +523,7 @@ class KnowledgeGraph:
 
         # Create HAS_TAG relationship table (DocSection to Tag)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS HAS_TAG (
                     FROM DocSection TO Tag,
@@ -537,7 +539,7 @@ class KnowledgeGraph:
 
         # Create DEMONSTRATES relationship table (DocSection to Tag for languages)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS DEMONSTRATES (
                     FROM DocSection TO Tag,
@@ -553,7 +555,7 @@ class KnowledgeGraph:
 
         # Create LINKS_TO relationship table (DocSection to DocSection)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS LINKS_TO (
                     FROM DocSection TO DocSection,
@@ -569,7 +571,7 @@ class KnowledgeGraph:
 
         # Create CONTAINS_SECTION relationship table (Document → DocSection)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS CONTAINS_SECTION (
                     FROM Document TO DocSection,
@@ -583,7 +585,7 @@ class KnowledgeGraph:
 
         # Create RELATED_TO relationship table (Document → Document cross-references)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS RELATED_TO (
                     FROM Document TO Document,
@@ -598,7 +600,7 @@ class KnowledgeGraph:
 
         # Create DESCRIBES relationship table (Document → CodeEntity)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS DESCRIBES (
                     FROM Document TO CodeEntity,
@@ -613,7 +615,7 @@ class KnowledgeGraph:
 
         # Create HAS_TOPIC relationship table (Document → Topic)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS HAS_TOPIC (
                     FROM Document TO Topic,
@@ -627,7 +629,7 @@ class KnowledgeGraph:
 
         # Create Person node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Person (
                     id STRING PRIMARY KEY,
@@ -645,7 +647,7 @@ class KnowledgeGraph:
 
         # Create Project node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Project (
                     id STRING PRIMARY KEY,
@@ -661,7 +663,7 @@ class KnowledgeGraph:
 
         # Create AUTHORED relationship (Person -> CodeEntity)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS AUTHORED (
                     FROM Person TO CodeEntity,
@@ -678,7 +680,7 @@ class KnowledgeGraph:
 
         # Create MODIFIED relationship (Person -> CodeEntity)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS MODIFIED (
                     FROM Person TO CodeEntity,
@@ -695,7 +697,7 @@ class KnowledgeGraph:
 
         # Create WROTE relationship (Person -> Document) for frontmatter author links
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS WROTE (
                     FROM Person TO Document,
@@ -710,7 +712,7 @@ class KnowledgeGraph:
 
         # Create PART_OF relationship (CodeEntity -> Project)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS PART_OF (
                     FROM CodeEntity TO Project,
@@ -724,7 +726,7 @@ class KnowledgeGraph:
 
         # Create Repository node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Repository (
                     id STRING PRIMARY KEY,
@@ -741,7 +743,7 @@ class KnowledgeGraph:
 
         # Create Branch node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Branch (
                     id STRING PRIMARY KEY,
@@ -758,7 +760,7 @@ class KnowledgeGraph:
 
         # Create Commit node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS Commit (
                     id STRING PRIMARY KEY,
@@ -776,7 +778,7 @@ class KnowledgeGraph:
 
         # Create ProgrammingLanguage node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS ProgrammingLanguage (
                     id STRING PRIMARY KEY,
@@ -792,7 +794,7 @@ class KnowledgeGraph:
 
         # Create ProgrammingFramework node table
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS ProgrammingFramework (
                     id STRING PRIMARY KEY,
@@ -809,7 +811,7 @@ class KnowledgeGraph:
 
         # Create MODIFIES relationship (Commit -> CodeEntity)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS MODIFIES (
                     FROM Commit TO CodeEntity,
@@ -825,7 +827,7 @@ class KnowledgeGraph:
 
         # Create BRANCHED_FROM relationship (Branch -> Branch)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS BRANCHED_FROM (
                     FROM Branch TO Branch,
@@ -840,7 +842,7 @@ class KnowledgeGraph:
 
         # Create COMMITTED_TO relationship (Commit -> Branch)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS COMMITTED_TO (
                     FROM Commit TO Branch,
@@ -854,7 +856,7 @@ class KnowledgeGraph:
 
         # Create BELONGS_TO relationship (Branch -> Repository)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS BELONGS_TO (
                     FROM Branch TO Repository,
@@ -868,7 +870,7 @@ class KnowledgeGraph:
 
         # Create WRITTEN_IN relationship (CodeEntity -> ProgrammingLanguage)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS WRITTEN_IN (
                     FROM CodeEntity TO ProgrammingLanguage,
@@ -882,7 +884,7 @@ class KnowledgeGraph:
 
         # Create USES_FRAMEWORK relationship (Project -> ProgrammingFramework)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS USES_FRAMEWORK (
                     FROM Project TO ProgrammingFramework,
@@ -896,7 +898,7 @@ class KnowledgeGraph:
 
         # Create FRAMEWORK_FOR relationship (ProgrammingFramework -> ProgrammingLanguage)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS FRAMEWORK_FOR (
                     FROM ProgrammingFramework TO ProgrammingLanguage,
@@ -911,7 +913,7 @@ class KnowledgeGraph:
         # Issue #156: Test knowledge graph nodes and relationships
         # TestSuite node table (one per test file)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS TestSuite (
                     id STRING PRIMARY KEY,
@@ -928,7 +930,7 @@ class KnowledgeGraph:
 
         # TestCase node table (one per test function/class)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE NODE TABLE IF NOT EXISTS TestCase (
                     id STRING PRIMARY KEY,
@@ -947,7 +949,7 @@ class KnowledgeGraph:
 
         # TESTS rel: TestCase -> CodeEntity (the production code under test)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS TESTS (
                     FROM TestCase TO CodeEntity,
@@ -964,7 +966,7 @@ class KnowledgeGraph:
         #  so we use BELONGS_TO_SUITE here to avoid table-name collision while preserving
         #  intent.)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS BELONGS_TO_SUITE (
                     FROM TestCase TO TestSuite,
@@ -978,7 +980,7 @@ class KnowledgeGraph:
 
         # USES_FIXTURE rel: TestCase -> CodeEntity (fixture function)
         try:
-            self._conn.execute(
+            self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS USES_FIXTURE (
                     FROM TestCase TO CodeEntity,
@@ -1001,7 +1003,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (e:CodeEntity {id: $id})
                 ON MATCH SET e.name = $name,
@@ -1036,7 +1038,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (d:DocSection {id: $id})
                 ON MATCH SET d.name = $name,
@@ -1082,7 +1084,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (t:Tag {id: $id})
                 ON MATCH SET t.name = $name
@@ -1108,7 +1110,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (p:Person {id: $id})
                 ON MATCH SET p.name = $name,
@@ -1146,7 +1148,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (p:Project {id: $id})
                 ON MATCH SET p.name = $name,
@@ -1189,10 +1191,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            person_exists = self._conn.execute(
+            person_exists = self._execute_query(
                 "MATCH (p:Person {id: $id}) RETURN p", {"id": person_id}
             )
-            entity_exists = self._conn.execute(
+            entity_exists = self._execute_query(
                 "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": entity_id}
             )
 
@@ -1204,7 +1206,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (p:Person {id: $person_id}), (e:CodeEntity {id: $entity_id})
                 MERGE (p)-[r:AUTHORED]->(e)
@@ -1249,10 +1251,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            person_exists = self._conn.execute(
+            person_exists = self._execute_query(
                 "MATCH (p:Person {id: $id}) RETURN p", {"id": person_id}
             )
-            entity_exists = self._conn.execute(
+            entity_exists = self._execute_query(
                 "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": entity_id}
             )
 
@@ -1264,7 +1266,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (p:Person {id: $person_id}), (e:CodeEntity {id: $entity_id})
                 MERGE (p)-[r:MODIFIED]->(e)
@@ -1299,10 +1301,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            entity_exists = self._conn.execute(
+            entity_exists = self._execute_query(
                 "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": entity_id}
             )
-            project_exists = self._conn.execute(
+            project_exists = self._execute_query(
                 "MATCH (p:Project {id: $id}) RETURN p", {"id": project_id}
             )
 
@@ -1314,7 +1316,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (e:CodeEntity {id: $entity_id}), (p:Project {id: $project_id})
                 MERGE (e)-[r:PART_OF]->(p)
@@ -1339,7 +1341,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (r:Repository {id: $id})
                 ON MATCH SET r.name = $name,
@@ -1374,7 +1376,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (b:Branch {id: $id})
                 ON MATCH SET b.name = $name,
@@ -1409,7 +1411,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (c:Commit {id: $id})
                 ON MATCH SET c.sha = $sha,
@@ -1447,7 +1449,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (l:ProgrammingLanguage {id: $id})
                 ON MATCH SET l.name = $name,
@@ -1479,7 +1481,7 @@ class KnowledgeGraph:
 
         try:
             # Use MERGE to avoid duplicates
-            self._conn.execute(
+            self._execute_query(
                 """
                 MERGE (f:ProgrammingFramework {id: $id})
                 ON MATCH SET f.name = $name,
@@ -1515,10 +1517,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            entity_exists = self._conn.execute(
+            entity_exists = self._execute_query(
                 "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": entity_id}
             )
-            language_exists = self._conn.execute(
+            language_exists = self._execute_query(
                 "MATCH (l:ProgrammingLanguage {id: $id}) RETURN l", {"id": language_id}
             )
 
@@ -1530,7 +1532,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (e:CodeEntity {id: $entity_id})
                 MATCH (l:ProgrammingLanguage {id: $language_id})
@@ -1553,10 +1555,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            project_exists = self._conn.execute(
+            project_exists = self._execute_query(
                 "MATCH (p:Project {id: $id}) RETURN p", {"id": project_id}
             )
-            framework_exists = self._conn.execute(
+            framework_exists = self._execute_query(
                 "MATCH (f:ProgrammingFramework {id: $id}) RETURN f",
                 {"id": framework_id},
             )
@@ -1569,7 +1571,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (p:Project {id: $project_id})
                 MATCH (f:ProgrammingFramework {id: $framework_id})
@@ -1592,11 +1594,11 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            framework_exists = self._conn.execute(
+            framework_exists = self._execute_query(
                 "MATCH (f:ProgrammingFramework {id: $id}) RETURN f",
                 {"id": framework_id},
             )
-            language_exists = self._conn.execute(
+            language_exists = self._execute_query(
                 "MATCH (l:ProgrammingLanguage {id: $id}) RETURN l", {"id": language_id}
             )
 
@@ -1608,7 +1610,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (f:ProgrammingFramework {id: $framework_id})
                 MATCH (l:ProgrammingLanguage {id: $language_id})
@@ -1639,10 +1641,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            commit_exists = self._conn.execute(
+            commit_exists = self._execute_query(
                 "MATCH (c:Commit {id: $id}) RETURN c", {"id": commit_id}
             )
-            entity_exists = self._conn.execute(
+            entity_exists = self._execute_query(
                 "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": entity_id}
             )
 
@@ -1654,7 +1656,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (c:Commit {id: $commit_id}), (e:CodeEntity {id: $entity_id})
                 MERGE (c)-[r:MODIFIES]->(e)
@@ -1689,10 +1691,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            source_exists = self._conn.execute(
+            source_exists = self._execute_query(
                 "MATCH (b:Branch {id: $id}) RETURN b", {"id": source_branch_id}
             )
-            target_exists = self._conn.execute(
+            target_exists = self._execute_query(
                 "MATCH (b:Branch {id: $id}) RETURN b", {"id": target_branch_id}
             )
 
@@ -1704,7 +1706,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (s:Branch {id: $source_id}), (t:Branch {id: $target_id})
                 MERGE (s)-[r:BRANCHED_FROM]->(t)
@@ -1733,10 +1735,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            commit_exists = self._conn.execute(
+            commit_exists = self._execute_query(
                 "MATCH (c:Commit {id: $id}) RETURN c", {"id": commit_id}
             )
-            branch_exists = self._conn.execute(
+            branch_exists = self._execute_query(
                 "MATCH (b:Branch {id: $id}) RETURN b", {"id": branch_id}
             )
 
@@ -1748,7 +1750,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (c:Commit {id: $commit_id}), (b:Branch {id: $branch_id})
                 MERGE (c)-[r:COMMITTED_TO]->(b)
@@ -1774,10 +1776,10 @@ class KnowledgeGraph:
 
         try:
             # Check if both nodes exist
-            branch_exists = self._conn.execute(
+            branch_exists = self._execute_query(
                 "MATCH (b:Branch {id: $id}) RETURN b", {"id": branch_id}
             )
-            repo_exists = self._conn.execute(
+            repo_exists = self._execute_query(
                 "MATCH (r:Repository {id: $id}) RETURN r", {"id": repository_id}
             )
 
@@ -1789,7 +1791,7 @@ class KnowledgeGraph:
                 return
 
             # Create relationship
-            self._conn.execute(
+            self._execute_query(
                 """
                 MATCH (b:Branch {id: $branch_id}), (r:Repository {id: $repository_id})
                 MERGE (b)-[rel:BELONGS_TO]->(r)
@@ -2023,7 +2025,7 @@ class KnowledgeGraph:
             ]
 
             try:
-                self._conn.execute(
+                self._execute_query(
                     """
                     UNWIND $batch AS d
                     MERGE (n:Document {id: d.id})
@@ -2516,7 +2518,7 @@ class KnowledgeGraph:
             ]
 
             try:
-                self._conn.execute(
+                self._execute_query(
                     """
                     UNWIND $batch AS e
                     MERGE (n:CodeEntity {id: e.id})
@@ -2577,7 +2579,7 @@ class KnowledgeGraph:
             ]
 
             try:
-                self._conn.execute(
+                self._execute_query(
                     """
                     UNWIND $batch AS d
                     MERGE (n:DocSection {id: d.id})
@@ -2765,7 +2767,7 @@ class KnowledgeGraph:
             params = [{"id": f"tag:{name}", "name": name} for name in batch]
 
             try:
-                self._conn.execute(
+                self._execute_query(
                     """
                     UNWIND $batch AS t
                     MERGE (n:Tag {id: t.id})
@@ -2808,7 +2810,7 @@ class KnowledgeGraph:
             batch = entity_ids[i : i + batch_size]
 
             try:
-                self._conn.execute(
+                self._execute_query(
                     """
                     UNWIND $batch AS eid
                     MATCH (e:CodeEntity {id: eid})
@@ -2845,10 +2847,10 @@ class KnowledgeGraph:
             # Determine node types based on relationship type
             if rel_table in ["CALLS", "IMPORTS", "INHERITS", "CONTAINS"]:
                 # Code-to-code relationship
-                source_exists = self._conn.execute(
+                source_exists = self._execute_query(
                     "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": rel.source_id}
                 )
-                target_exists = self._conn.execute(
+                target_exists = self._execute_query(
                     "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": rel.target_id}
                 )
 
@@ -2860,7 +2862,7 @@ class KnowledgeGraph:
                     return
 
                 # Create relationship
-                self._conn.execute(
+                self._execute_query(
                     f"""
                     MATCH (a:CodeEntity {{id: $source}}), (b:CodeEntity {{id: $target}})
                     MERGE (a)-[r:{rel_table}]->(b)
@@ -2877,10 +2879,10 @@ class KnowledgeGraph:
 
             elif rel_table == "FOLLOWS":
                 # Doc-to-doc relationship
-                source_exists = self._conn.execute(
+                source_exists = self._execute_query(
                     "MATCH (d:DocSection {id: $id}) RETURN d", {"id": rel.source_id}
                 )
-                target_exists = self._conn.execute(
+                target_exists = self._execute_query(
                     "MATCH (d:DocSection {id: $id}) RETURN d", {"id": rel.target_id}
                 )
 
@@ -2892,7 +2894,7 @@ class KnowledgeGraph:
                     return
 
                 # Create relationship
-                self._conn.execute(
+                self._execute_query(
                     f"""
                     MATCH (a:DocSection {{id: $source}}), (b:DocSection {{id: $target}})
                     MERGE (a)-[r:{rel_table}]->(b)
@@ -2909,10 +2911,10 @@ class KnowledgeGraph:
 
             elif rel_table in ["REFERENCES", "DOCUMENTS"]:
                 # Doc-to-code relationship
-                source_exists = self._conn.execute(
+                source_exists = self._execute_query(
                     "MATCH (d:DocSection {id: $id}) RETURN d", {"id": rel.source_id}
                 )
-                target_exists = self._conn.execute(
+                target_exists = self._execute_query(
                     "MATCH (e:CodeEntity {id: $id}) RETURN e", {"id": rel.target_id}
                 )
 
@@ -2924,7 +2926,7 @@ class KnowledgeGraph:
                     return
 
                 # Create relationship
-                self._conn.execute(
+                self._execute_query(
                     f"""
                     MATCH (d:DocSection {{id: $source}}), (e:CodeEntity {{id: $target}})
                     MERGE (d)-[r:{rel_table}]->(e)
@@ -2941,10 +2943,10 @@ class KnowledgeGraph:
 
             elif rel_table in ["HAS_TAG", "DEMONSTRATES"]:
                 # Doc-to-tag relationship
-                source_exists = self._conn.execute(
+                source_exists = self._execute_query(
                     "MATCH (d:DocSection {id: $id}) RETURN d", {"id": rel.source_id}
                 )
-                target_exists = self._conn.execute(
+                target_exists = self._execute_query(
                     "MATCH (t:Tag {id: $id}) RETURN t", {"id": rel.target_id}
                 )
 
@@ -2956,7 +2958,7 @@ class KnowledgeGraph:
                     return
 
                 # Create relationship
-                self._conn.execute(
+                self._execute_query(
                     f"""
                     MATCH (d:DocSection {{id: $source}}), (t:Tag {{id: $target}})
                     MERGE (d)-[r:{rel_table}]->(t)
@@ -2973,10 +2975,10 @@ class KnowledgeGraph:
 
             elif rel_table == "LINKS_TO":
                 # Doc-to-doc relationship (explicit links)
-                source_exists = self._conn.execute(
+                source_exists = self._execute_query(
                     "MATCH (d:DocSection {id: $id}) RETURN d", {"id": rel.source_id}
                 )
-                target_exists = self._conn.execute(
+                target_exists = self._execute_query(
                     "MATCH (d:DocSection {id: $id}) RETURN d", {"id": rel.target_id}
                 )
 
@@ -2988,7 +2990,7 @@ class KnowledgeGraph:
                     return
 
                 # Create relationship
-                self._conn.execute(
+                self._execute_query(
                     f"""
                     MATCH (a:DocSection {{id: $source}}), (b:DocSection {{id: $target}})
                     MERGE (a)-[r:{rel_table}]->(b)
@@ -3048,7 +3050,7 @@ class KnowledgeGraph:
 
         try:
             # Try exact match first
-            result = self._conn.execute(
+            result = self._execute_query(
                 "MATCH (e:CodeEntity) WHERE e.name = $name RETURN e.id LIMIT 1",
                 {"name": name},
             )
@@ -3065,7 +3067,7 @@ class KnowledgeGraph:
             # Try case-insensitive contains match for non-generic names
             # Note: Kuzu doesn't have strlen/length for strings in ORDER BY,
             # so we just return first match
-            result = self._conn.execute(
+            result = self._execute_query(
                 """
                 MATCH (e:CodeEntity)
                 WHERE lower(e.name) CONTAINS lower($name)
@@ -3118,7 +3120,7 @@ class KnowledgeGraph:
                 return []
 
         try:
-            result = self._conn.execute(
+            result = self._execute_query(
                 f"""
                 MATCH (start:CodeEntity {{id: $id}})-[*1..{max_hops}]-(related:CodeEntity)
                 WHERE related.id <> start.id
@@ -3269,7 +3271,7 @@ class KnowledgeGraph:
                 return []
 
         try:
-            result = self._conn.execute(
+            result = self._execute_query(
                 """
                 MATCH (f:CodeEntity {id: $id})-[:CALLS]->(called:CodeEntity)
                 RETURN called.id AS id, called.name AS name, 'calls' AS direction
@@ -3341,7 +3343,7 @@ class KnowledgeGraph:
 
         # Fetch entry node metadata
         try:
-            entry_result = self._conn.execute(
+            entry_result = self._execute_query(
                 "MATCH (e:CodeEntity {id: $id}) RETURN e.id, e.name, e.entity_type, e.file_path LIMIT 1",
                 {"id": entry_id},
             )
@@ -3414,7 +3416,7 @@ class KnowledgeGraph:
                         MATCH (m:CodeEntity)-[:CALLS]->(n:CodeEntity {id: $id})
                         RETURN m.id, m.name, m.entity_type, m.file_path
                     """
-                result = self._conn.execute(q, {"id": current_id})
+                result = self._execute_query(q, {"id": current_id})
             except Exception as e:
                 logger.error(f"BFS query failed at {current_id}: {e}")
                 continue
@@ -3519,7 +3521,7 @@ class KnowledgeGraph:
 
         try:
             # Step 1: collect all distinct non-empty commit SHAs stored in the KG.
-            result = self._conn.execute(
+            result = self._execute_query(
                 "MATCH (e:CodeEntity) WHERE e.commit_sha <> '' "
                 "RETURN DISTINCT e.commit_sha"
             )
@@ -3543,7 +3545,7 @@ class KnowledgeGraph:
             # Step 3: fetch all entities with those commit SHAs.
             entities: list[dict[str, Any]] = []
             for sha in ancestor_shas:
-                r2 = self._conn.execute(
+                r2 = self._execute_query(
                     "MATCH (e:CodeEntity) WHERE e.commit_sha = $sha "
                     "RETURN e.id, e.name, e.entity_type, e.file_path, e.commit_sha",
                     {"sha": sha},
@@ -3591,7 +3593,7 @@ class KnowledgeGraph:
             await self.initialize()
 
         try:
-            result = self._conn.execute(
+            result = self._execute_query(
                 """
                 MATCH (caller:CodeEntity)-[:CALLS]->(e:CodeEntity)
                 WHERE e.name = $name
@@ -3641,7 +3643,7 @@ class KnowledgeGraph:
             await self.initialize()
 
         try:
-            result = self._conn.execute(
+            result = self._execute_query(
                 """
                 MATCH (e:CodeEntity)
                 WHERE e.name = $name
@@ -3699,7 +3701,7 @@ class KnowledgeGraph:
                 return []
 
         try:
-            result = self._conn.execute(
+            result = self._execute_query(
                 """
                 MATCH (c:CodeEntity {id: $id})-[:INHERITS*]->(parent:CodeEntity)
                 RETURN parent.id AS id, parent.name AS name, 'parent' AS relation
@@ -3742,7 +3744,7 @@ class KnowledgeGraph:
 
         try:
             # Search by entity name (not ID)
-            result = self._conn.execute(
+            result = self._execute_query(
                 f"""
                 MATCH (d:DocSection)-[:{rel_type}]->(e:CodeEntity)
                 WHERE e.name = $name
@@ -3800,7 +3802,7 @@ class KnowledgeGraph:
         links = []
 
         # 1. Project node
-        project_result = self._conn.execute(
+        project_result = self._execute_query(
             "MATCH (p:Project) RETURN p.id, p.name LIMIT 1"
         )
         if project_result.has_next():
@@ -3816,7 +3818,7 @@ class KnowledgeGraph:
             )
 
         # 2. Person nodes (all - usually small)
-        person_result = self._conn.execute("MATCH (p:Person) RETURN p.id, p.name")
+        person_result = self._execute_query("MATCH (p:Person) RETURN p.id, p.name")
         while person_result.has_next():
             row = person_result.get_next()
             nodes.append(
@@ -3831,7 +3833,7 @@ class KnowledgeGraph:
 
         # 3. Top connected CodeEntities (by degree)
         # Count incoming + outgoing relationships
-        top_entities_result = self._conn.execute("""
+        top_entities_result = self._execute_query("""
             MATCH (e:CodeEntity)
             WITH e,
                  size((e)-[]-()) as degree
@@ -3856,7 +3858,7 @@ class KnowledgeGraph:
 
         # 4. Aggregation nodes for collapsed groups
         # Count entities by type that aren't in top 50
-        type_counts_result = self._conn.execute("""
+        type_counts_result = self._execute_query("""
             MATCH (e:CodeEntity)
             WITH e.entity_type as type, count(e) as cnt
             RETURN type, cnt
@@ -3906,7 +3908,7 @@ class KnowledgeGraph:
             ]:
                 try:
                     # Query all relationships of this type and filter in Python
-                    rel_result = self._conn.execute(f"""
+                    rel_result = self._execute_query(f"""
                         MATCH (a)-[r:{rel_type}]->(b)
                         RETURN a.id, b.id
                     """)
@@ -3943,7 +3945,7 @@ class KnowledgeGraph:
     async def _count_entities(self, label: str) -> int:
         """Count entities with given label."""
         try:
-            result = self._conn.execute(f"MATCH (n:{label}) RETURN count(n)")
+            result = self._execute_query(f"MATCH (n:{label}) RETURN count(n)")
             return result.get_next()[0] if result.has_next() else 0
         except Exception:
             return 0
@@ -3973,7 +3975,7 @@ class KnowledgeGraph:
             entity_type = node_id.split(":", 1)[1]
             # Return sample of this type
             if entity_type == "doc_section":
-                result = self._conn.execute(f"""
+                result = self._execute_query(f"""
                     MATCH (d:DocSection)
                     RETURN d.id, d.name, d.file_path
                     LIMIT {max_per_type}
@@ -3991,7 +3993,7 @@ class KnowledgeGraph:
                         }
                     )
             else:
-                result = self._conn.execute(f"""
+                result = self._execute_query(f"""
                     MATCH (e:CodeEntity)
                     WHERE e.entity_type = '{entity_type}'
                     RETURN e.id, e.name, e.entity_type, e.file_path
@@ -4037,7 +4039,7 @@ class KnowledgeGraph:
         ]:
             try:
                 # Outgoing relationships
-                result = self._conn.execute(f"""
+                result = self._execute_query(f"""
                     MATCH (a {{id: '{safe_node_id}'}})-[r:{rel_type}]->(b)
                     RETURN b.id, b.name, labels(b)[0] as label
                     LIMIT 100
@@ -4080,7 +4082,7 @@ class KnowledgeGraph:
                         )
 
                 # Incoming relationships
-                result = self._conn.execute(f"""
+                result = self._execute_query(f"""
                     MATCH (a)-[r:{rel_type}]->(b {{id: '{safe_node_id}'}})
                     RETURN a.id, a.name, labels(a)[0] as label
                     LIMIT 100
@@ -4161,7 +4163,7 @@ class KnowledgeGraph:
             # Get all code entities as nodes
             nodes = []
             entities = []
-            entity_result = self._conn.execute(
+            entity_result = self._execute_query(
                 """
                 MATCH (e:CodeEntity)
                 RETURN e.id AS id,
@@ -4184,7 +4186,7 @@ class KnowledgeGraph:
                 )
 
             # Add DocSection nodes
-            doc_result = self._conn.execute(
+            doc_result = self._execute_query(
                 """
                 MATCH (d:DocSection)
                 RETURN d.id AS id,
@@ -4204,7 +4206,7 @@ class KnowledgeGraph:
                 )
 
             # Add Tag nodes
-            tag_result = self._conn.execute(
+            tag_result = self._execute_query(
                 "MATCH (t:Tag) RETURN t.id AS id, t.name AS name"
             )
             while tag_result.has_next():
@@ -4219,7 +4221,7 @@ class KnowledgeGraph:
                 )
 
             # Add Person nodes
-            person_result = self._conn.execute(
+            person_result = self._execute_query(
                 "MATCH (p:Person) RETURN p.id AS id, p.name AS name"
             )
             while person_result.has_next():
@@ -4234,7 +4236,7 @@ class KnowledgeGraph:
                 )
 
             # Add Project nodes
-            project_result = self._conn.execute(
+            project_result = self._execute_query(
                 "MATCH (p:Project) RETURN p.id AS id, p.name AS name"
             )
             while project_result.has_next():
@@ -4249,7 +4251,7 @@ class KnowledgeGraph:
                 )
 
             # Add Topic nodes (IA groups)
-            topic_result = self._conn.execute(
+            topic_result = self._execute_query(
                 "MATCH (t:Topic) RETURN t.id AS id, t.name AS name"
             )
             while topic_result.has_next():
@@ -4360,7 +4362,7 @@ class KnowledgeGraph:
             code_relationship_types = ["CALLS", "IMPORTS", "INHERITS", "CONTAINS"]
             for rel_type in code_relationship_types:
                 try:
-                    rel_result = self._conn.execute(
+                    rel_result = self._execute_query(
                         f"""
                         MATCH (a:CodeEntity)-[r:{rel_type}]->(b:CodeEntity)
                         RETURN a.id AS source,
@@ -4385,7 +4387,7 @@ class KnowledgeGraph:
 
             # Documentation relationships (DocSection -> DocSection)
             try:
-                follows_result = self._conn.execute(
+                follows_result = self._execute_query(
                     """
                     MATCH (a:DocSection)-[r:FOLLOWS]->(b:DocSection)
                     RETURN a.id AS source, b.id AS target
@@ -4406,7 +4408,7 @@ class KnowledgeGraph:
 
             # Documentation -> Code references
             try:
-                references_result = self._conn.execute(
+                references_result = self._execute_query(
                     """
                     MATCH (a:DocSection)-[r:REFERENCES]->(b:CodeEntity)
                     RETURN a.id AS source, b.id AS target
@@ -4427,7 +4429,7 @@ class KnowledgeGraph:
 
             # Documentation -> Code demonstrations
             try:
-                demonstrates_result = self._conn.execute(
+                demonstrates_result = self._execute_query(
                     """
                     MATCH (a:DocSection)-[r:DEMONSTRATES]->(b:CodeEntity)
                     RETURN a.id AS source, b.id AS target
@@ -4448,7 +4450,7 @@ class KnowledgeGraph:
 
             # Tag relationships (DocSection/CodeEntity -> Tag)
             try:
-                has_tag_result = self._conn.execute(
+                has_tag_result = self._execute_query(
                     """
                     MATCH (a)-[r:HAS_TAG]->(t:Tag)
                     WHERE a:DocSection OR a:CodeEntity
@@ -4470,7 +4472,7 @@ class KnowledgeGraph:
 
             # Person relationships (AUTHORED)
             try:
-                authored_result = self._conn.execute(
+                authored_result = self._execute_query(
                     """
                     MATCH (p:Person)-[r:AUTHORED]->(e)
                     WHERE e:CodeEntity OR e:DocSection
@@ -4492,7 +4494,7 @@ class KnowledgeGraph:
 
             # Part of relationships (various -> Project)
             try:
-                part_of_result = self._conn.execute(
+                part_of_result = self._execute_query(
                     """
                     MATCH (a)-[r:PART_OF]->(p:Project)
                     RETURN a.id AS source, p.id AS target
@@ -4562,7 +4564,7 @@ class KnowledgeGraph:
     def _count_nodes(self, table: str) -> int:
         """Count nodes in a given table; returns 0 if table missing or query fails."""
         try:
-            result = self._conn.execute(f"MATCH (n:{table}) RETURN count(n) AS cnt")
+            result = self._execute_query(f"MATCH (n:{table}) RETURN count(n) AS cnt")
             return result.get_next()[0] if result.has_next() else 0
         except Exception:
             return 0
@@ -4570,7 +4572,7 @@ class KnowledgeGraph:
     def _count_rels(self, table: str) -> int:
         """Count relationships in a given table; returns 0 on missing table or error."""
         try:
-            result = self._conn.execute(
+            result = self._execute_query(
                 f"MATCH ()-[r:{table}]->() RETURN count(r) AS cnt"
             )
             return result.get_next()[0] if result.has_next() else 0
@@ -4588,7 +4590,7 @@ class KnowledgeGraph:
 
         try:
             # Count total code entities
-            entity_result = self._conn.execute(
+            entity_result = self._execute_query(
                 "MATCH (e:CodeEntity) RETURN count(e) AS count"
             )
             total_entities = (
@@ -4596,7 +4598,7 @@ class KnowledgeGraph:
             )
 
             # Get all distinct entity types and their counts
-            entity_types_result = self._conn.execute(
+            entity_types_result = self._execute_query(
                 """
                 MATCH (e:CodeEntity)
                 RETURN e.entity_type AS type, count(e) AS count
@@ -4609,17 +4611,17 @@ class KnowledgeGraph:
                 entity_types[row[0]] = row[1]
 
             # Count doc sections
-            doc_result = self._conn.execute(
+            doc_result = self._execute_query(
                 "MATCH (d:DocSection) RETURN count(d) AS count"
             )
             doc_count = doc_result.get_next()[0] if doc_result.has_next() else 0
 
             # Count tags
-            tag_result = self._conn.execute("MATCH (t:Tag) RETURN count(t) AS count")
+            tag_result = self._execute_query("MATCH (t:Tag) RETURN count(t) AS count")
             tag_count = tag_result.get_next()[0] if tag_result.has_next() else 0
 
             # Count persons
-            person_result = self._conn.execute(
+            person_result = self._execute_query(
                 "MATCH (p:Person) RETURN count(p) AS count"
             )
             person_count = (
@@ -4627,7 +4629,7 @@ class KnowledgeGraph:
             )
 
             # Count projects
-            project_result = self._conn.execute(
+            project_result = self._execute_query(
                 "MATCH (p:Project) RETURN count(p) AS count"
             )
             project_count = (
@@ -4635,13 +4637,13 @@ class KnowledgeGraph:
             )
 
             # Count repositories
-            repo_result = self._conn.execute(
+            repo_result = self._execute_query(
                 "MATCH (r:Repository) RETURN count(r) AS count"
             )
             repo_count = repo_result.get_next()[0] if repo_result.has_next() else 0
 
             # Count branches
-            branch_result = self._conn.execute(
+            branch_result = self._execute_query(
                 "MATCH (b:Branch) RETURN count(b) AS count"
             )
             branch_count = (
@@ -4649,7 +4651,7 @@ class KnowledgeGraph:
             )
 
             # Count commits
-            commit_result = self._conn.execute(
+            commit_result = self._execute_query(
                 "MATCH (c:Commit) RETURN count(c) AS count"
             )
             commit_count = (
@@ -4657,13 +4659,13 @@ class KnowledgeGraph:
             )
 
             # Count languages
-            lang_result = self._conn.execute(
+            lang_result = self._execute_query(
                 "MATCH (l:ProgrammingLanguage) RETURN count(l) AS count"
             )
             lang_count = lang_result.get_next()[0] if lang_result.has_next() else 0
 
             # Count frameworks
-            framework_result = self._conn.execute(
+            framework_result = self._execute_query(
                 "MATCH (f:ProgrammingFramework) RETURN count(f) AS count"
             )
             framework_count = (
@@ -4702,7 +4704,7 @@ class KnowledgeGraph:
                 "USES_FIXTURE",
             ]:
                 try:
-                    rel_result = self._conn.execute(
+                    rel_result = self._execute_query(
                         f"MATCH ()-[r:{rel_type}]->() RETURN count(r) AS count"
                     )
                     rel_counts[rel_type.lower()] = (
@@ -4893,7 +4895,7 @@ class KnowledgeGraph:
 
         try:
             # Count code entities
-            entity_result = self._conn.execute(
+            entity_result = self._execute_query(
                 "MATCH (e:CodeEntity) RETURN count(e) AS count"
             )
             entity_count = (
@@ -4901,17 +4903,17 @@ class KnowledgeGraph:
             )
 
             # Count doc sections
-            doc_result = self._conn.execute(
+            doc_result = self._execute_query(
                 "MATCH (d:DocSection) RETURN count(d) AS count"
             )
             doc_count = doc_result.get_next()[0] if doc_result.has_next() else 0
 
             # Count tags
-            tag_result = self._conn.execute("MATCH (t:Tag) RETURN count(t) AS count")
+            tag_result = self._execute_query("MATCH (t:Tag) RETURN count(t) AS count")
             tag_count = tag_result.get_next()[0] if tag_result.has_next() else 0
 
             # Count document nodes
-            document_result = self._conn.execute(
+            document_result = self._execute_query(
                 "MATCH (d:Document) RETURN count(d) AS count"
             )
             document_count = (
@@ -4919,7 +4921,7 @@ class KnowledgeGraph:
             )
 
             # Count persons
-            person_result = self._conn.execute(
+            person_result = self._execute_query(
                 "MATCH (p:Person) RETURN count(p) AS count"
             )
             person_count = (
@@ -4927,7 +4929,7 @@ class KnowledgeGraph:
             )
 
             # Count projects
-            project_result = self._conn.execute(
+            project_result = self._execute_query(
                 "MATCH (p:Project) RETURN count(p) AS count"
             )
             project_count = (
@@ -4935,13 +4937,13 @@ class KnowledgeGraph:
             )
 
             # Count repositories
-            repo_result = self._conn.execute(
+            repo_result = self._execute_query(
                 "MATCH (r:Repository) RETURN count(r) AS count"
             )
             repo_count = repo_result.get_next()[0] if repo_result.has_next() else 0
 
             # Count branches
-            branch_result = self._conn.execute(
+            branch_result = self._execute_query(
                 "MATCH (b:Branch) RETURN count(b) AS count"
             )
             branch_count = (
@@ -4949,7 +4951,7 @@ class KnowledgeGraph:
             )
 
             # Count commits
-            commit_result = self._conn.execute(
+            commit_result = self._execute_query(
                 "MATCH (c:Commit) RETURN count(c) AS count"
             )
             commit_count = (
@@ -4957,7 +4959,7 @@ class KnowledgeGraph:
             )
 
             # Count topics
-            topic_result = self._conn.execute(
+            topic_result = self._execute_query(
                 "MATCH (t:Topic) RETURN count(t) AS count"
             )
             topic_count = topic_result.get_next()[0] if topic_result.has_next() else 0
@@ -4988,7 +4990,7 @@ class KnowledgeGraph:
                 "DESCRIBES",
             ]:
                 try:
-                    rel_result = self._conn.execute(
+                    rel_result = self._execute_query(
                         f"MATCH ()-[r:{rel_type}]->() RETURN count(r) AS count"
                     )
                     rel_counts[rel_type.lower()] = (
@@ -5316,7 +5318,7 @@ class KnowledgeGraph:
 
         for source_label, rel_type, target_label, pattern_name in patterns:
             try:
-                result = self._conn.execute(
+                result = self._execute_query(
                     f"""
                     MATCH (s:{source_label})-[r:{rel_type}]->(t:{target_label})
                     RETURN s.name AS source, '{rel_type}' AS rel, t.name AS target
@@ -5428,6 +5430,132 @@ class KnowledgeGraph:
         except Exception as e:
             logger.debug(
                 f"delete_entities_for_files: CONTAINS_SECTION edge delete skipped: {e}"
+            )
+
+        # Doc-to-doc RELATED_TO (Document -> Document) — delete when EITHER end belongs
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:Document)-[r:RELATED_TO]->(b:Document)
+                WHERE a.file_path IN {path_list}
+                   OR b.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(
+                f"delete_entities_for_files: RELATED_TO edge delete skipped: {e}"
+            )
+
+        # Document-to-CodeEntity DESCRIBES — delete when EITHER end belongs
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:Document)-[r:DESCRIBES]->(b:CodeEntity)
+                WHERE a.file_path IN {path_list}
+                   OR b.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(
+                f"delete_entities_for_files: DESCRIBES edge delete skipped: {e}"
+            )
+
+        # Document-to-Topic HAS_TOPIC — Topic has no file_path, filter by Document
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:Document)-[r:HAS_TOPIC]->(b:Topic)
+                WHERE a.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(
+                f"delete_entities_for_files: HAS_TOPIC edge delete skipped: {e}"
+            )
+
+        # Person-to-CodeEntity AUTHORED — Person has no file_path, filter by CodeEntity
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:Person)-[r:AUTHORED]->(b:CodeEntity)
+                WHERE b.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(
+                f"delete_entities_for_files: AUTHORED edge delete skipped: {e}"
+            )
+
+        # Person-to-CodeEntity MODIFIED — Person has no file_path, filter by CodeEntity
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:Person)-[r:MODIFIED]->(b:CodeEntity)
+                WHERE b.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(
+                f"delete_entities_for_files: MODIFIED edge delete skipped: {e}"
+            )
+
+        # Person-to-Document WROTE — Person has no file_path, filter by Document
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:Person)-[r:WROTE]->(b:Document)
+                WHERE b.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(f"delete_entities_for_files: WROTE edge delete skipped: {e}")
+
+        # CodeEntity-to-Project PART_OF — Project has no file_path, filter by CodeEntity
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:CodeEntity)-[r:PART_OF]->(b:Project)
+                WHERE a.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(f"delete_entities_for_files: PART_OF edge delete skipped: {e}")
+
+        # DocSection-to-Tag HAS_TAG / DEMONSTRATES — Tag has no file_path, filter by DocSection
+        for rel_type in ["HAS_TAG", "DEMONSTRATES"]:
+            try:
+                self._execute_query(
+                    f"""
+                    MATCH (a:DocSection)-[r:{rel_type}]->(b:Tag)
+                    WHERE a.file_path IN {path_list}
+                    DELETE r
+                    """
+                )
+            except Exception as e:
+                logger.debug(
+                    f"delete_entities_for_files: {rel_type} edge delete skipped: {e}"
+                )
+
+        # DocSection-to-DocSection LINKS_TO — delete when EITHER end belongs
+        try:
+            self._execute_query(
+                f"""
+                MATCH (a:DocSection)-[r:LINKS_TO]->(b:DocSection)
+                WHERE a.file_path IN {path_list}
+                   OR b.file_path IN {path_list}
+                DELETE r
+                """
+            )
+        except Exception as e:
+            logger.debug(
+                f"delete_entities_for_files: LINKS_TO edge delete skipped: {e}"
             )
 
         # --- 2. Delete CodeEntity nodes ---

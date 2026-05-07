@@ -95,10 +95,45 @@ def _build_kg_impl(
                 )
 
             # --- Incremental: hash-based change detection ---
+            # Default behavior: when kg_metadata.json contains file_hashes (i.e. a
+            # previous build is on disk that supports hash diffing), we ALWAYS run
+            # the diff regardless of the --incremental flag. Only --force skips it.
+            #
+            # The explicit --incremental flag is preserved for back-compat and for
+            # forcing a diff when no metadata exists yet (in which case the diff
+            # treats everything as "new" → effectively a full build).
             files_to_process: set[str] | None = None  # None = process all
             files_to_delete: set[str] = set()
 
-            if incremental:
+            # Decide whether to attempt incremental diffing.
+            #   - If --force: never (caller wants a full rebuild)
+            #   - If --incremental: always (explicit opt-in, even on first run)
+            #   - Otherwise: only when prior metadata has file_hashes
+            should_diff = False
+            if not force:
+                if incremental:
+                    should_diff = True
+                else:
+                    metadata_path = (
+                        project_root
+                        / ".mcp-vector-search"
+                        / "knowledge_graph"
+                        / "kg_metadata.json"
+                    )
+                    if metadata_path.exists():
+                        try:
+                            with open(metadata_path) as f:
+                                _meta = json.load(f)
+                            if isinstance(_meta, dict) and "file_hashes" in _meta:
+                                should_diff = True
+                        except Exception as e:
+                            logger.debug(
+                                "kg build: failed to read kg_metadata.json for "
+                                "default-incremental check: %s",
+                                e,
+                            )
+
+            if should_diff:
                 # Use ChunksBackend to get per-file hashes (file_hash lives there)
                 lance_path = project_root / ".mcp-vector-search" / "lance"
                 chunks_backend = ChunksBackend(lance_path)
@@ -129,12 +164,21 @@ def _build_kg_impl(
                     )
 
                 if not files_to_process and not files_to_delete:
-                    console.print(
-                        "[green]✓ KG already up to date — no file changes detected[/green]"
-                    )
-                    raise typer.Exit(0)
+                    # Nothing to do — let the subprocess print the "up to date"
+                    # message after it inspects the existing graph. We still need
+                    # to drop into the subprocess path because the parent process
+                    # has no view of the existing entity count without re-opening
+                    # the KG here. Pass an EMPTY chunks file and an EMPTY
+                    # files-to-delete file to signal "nothing changed".
+                    if verbose:
+                        console.print(
+                            "[green]✓ No file changes detected — "
+                            "subprocess will report up-to-date status[/green]"
+                        )
+                    # Fall through: chunks_data will be empty and
+                    # files_to_delete_path will be written as an empty list below.
 
-                if verbose:
+                elif verbose:
                     console.print(
                         f"[cyan]Processing {len(files_to_process)} file(s), "
                         f"deleting entities from {len(files_to_delete)} file(s)[/cyan]"
@@ -152,12 +196,6 @@ def _build_kg_impl(
                 if limit and len(chunks) >= limit:
                     chunks = chunks[:limit]
                     break
-
-            if incremental and len(chunks) == 0 and not files_to_delete:
-                console.print(
-                    "[green]✓ No chunks to process in incremental mode[/green]"
-                )
-                raise typer.Exit(0)
 
             if verbose:
                 console.print(f"[green]✓ Loaded {len(chunks)} chunks[/green]")
@@ -179,8 +217,13 @@ def _build_kg_impl(
             finally:
                 os.close(temp_fd)
 
-            # --- Write files-to-delete list (incremental only) ---
-            if incremental and files_to_delete:
+            # --- Write files-to-delete list (whenever we're in diff mode) ---
+            # We always write this file in diff mode — even when it is empty —
+            # so the subprocess can distinguish:
+            #   • file present + non-empty → incremental update
+            #   • file present + empty AND chunks empty → "up to date" (exit 0)
+            #   • file absent → full build (legacy behavior, force or no metadata)
+            if should_diff:
                 del_fd, files_to_delete_path = tempfile.mkstemp(
                     suffix=".json", prefix="kg_delete_"
                 )
@@ -375,7 +418,9 @@ def _build_kg_impl(
         )  # Always normalize to 1, never propagate raw signal/OS codes
 
     # --- Post-build: persist file hashes so next incremental run can diff ---
-    if incremental and current_hashes:
+    # We persist hashes whenever we computed them (incremental flag OR default
+    # diff path triggered because metadata had file_hashes).
+    if current_hashes:
         try:
             builder_for_meta = KGBuilder(
                 None,  # type: ignore[arg-type]  # only metadata path needed

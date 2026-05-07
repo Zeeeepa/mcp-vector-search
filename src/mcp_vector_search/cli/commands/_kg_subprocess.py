@@ -181,11 +181,37 @@ def main():
                 "Incremental KG: deleted entities for %d file(s)", len(files_to_delete)
             )
 
-        # Check if graph already exists — skip this guard in incremental mode
-        # (files_to_delete being set signals an incremental build where the KG is
-        # intentionally non-empty and we are *adding* to it, not replacing it)
-        incremental_mode = bool(args.files_to_delete)
-        if not args.force and not incremental_mode:
+        # Determine whether the parent invoked us in "diff mode".  Diff mode is
+        # signaled by --files-to-delete pointing to a real file (it may be
+        # empty, meaning "no changes, just confirm up-to-date status").
+        diff_mode = bool(args.files_to_delete) and Path(args.files_to_delete).exists()
+        files_to_delete_count = 0
+        if diff_mode:
+            try:
+                with open(args.files_to_delete) as _fdel:
+                    _fdel_data = json.load(_fdel)
+                    files_to_delete_count = (
+                        len(_fdel_data) if isinstance(_fdel_data, list) else 0
+                    )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Failed to recount files-to-delete file: %s", e)
+
+        # In diff mode, if BOTH the delete-list and the chunks list are empty,
+        # there is nothing to do — the KG is already up to date.  Print a clear
+        # "up to date" message and exit 0.
+        if diff_mode and files_to_delete_count == 0 and len(chunks) == 0:
+            stats = kg.get_stats_sync()
+            console.print(
+                f"[green]✓[/green] Knowledge graph is up to date "
+                f"({stats['total_entities']} entities)."
+            )
+            kg.close_sync()
+            return 0
+
+        # Check if graph already exists — skip this guard in diff/incremental mode
+        # (a non-empty diff_mode indicates we are *updating* the graph, not
+        # replacing it, so a non-empty existing graph is expected)
+        if not args.force and not diff_mode:
             stats = kg.get_stats_sync()
             if stats["total_entities"] > 0:
                 console.print(
