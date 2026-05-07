@@ -19,6 +19,7 @@ from ...core.chunks_backend import ChunksBackend
 from ...core.factory import ComponentFactory
 from ...core.kg_builder import KGBuilder
 from ...core.knowledge_graph import KnowledgeGraph
+from ...core.progress import ProgressTracker
 from ...core.project import ProjectManager
 from .visualize.server import find_free_port, start_visualization_server
 
@@ -185,20 +186,41 @@ def _build_kg_impl(
                     )
 
             # --- Load all chunks (filtered if incremental) ---
+            import time as _time
+
+            progress_tracker = ProgressTracker(console)
+            load_start_time = _time.time()
             chunks = []
+            chunks_seen = 0
             for batch in database.iter_chunks_batched(batch_size=5000):
+                chunks_seen += len(batch)
                 if files_to_process is not None:
                     # Only keep chunks belonging to files that changed or are new
                     batch = [c for c in batch if str(c.file_path) in files_to_process]
                 chunks.extend(batch)
+
+                # Show progress for chunk loading (writes to stderr, silenced if not TTY)
+                progress_tracker.progress_bar_with_eta(
+                    min(chunks_seen, chunk_count),
+                    chunk_count,
+                    prefix="Loading chunks",
+                    start_time=load_start_time,
+                )
 
                 # Apply limit if specified
                 if limit and len(chunks) >= limit:
                     chunks = chunks[:limit]
                     break
 
-            if verbose:
-                console.print(f"[green]✓ Loaded {len(chunks)} chunks[/green]")
+            # Final 100% tick to clear the progress bar line
+            progress_tracker.progress_bar_with_eta(
+                chunk_count,
+                chunk_count,
+                prefix="Loading chunks",
+                start_time=load_start_time,
+            )
+
+            console.print(f"[green]✓ Loaded {len(chunks):,} chunks[/green]")
 
             # --- Serialize chunks to temp JSON file ---
             if verbose:
@@ -249,12 +271,12 @@ def _build_kg_impl(
             console.print("[dim]Database closed explicitly[/dim]")
             sys.stdout.flush()
 
-        return temp_path, files_to_delete_path, current_hashes
+        return temp_path, files_to_delete_path, current_hashes, len(chunks)
 
     # Load chunks in parent process (before spawning subprocess)
     if verbose:
         console.print("[cyan]Loading chunks in parent process...[/cyan]")
-    chunks_file, files_to_delete_path, current_hashes = asyncio.run(
+    chunks_file, files_to_delete_path, current_hashes, loaded_chunk_count = asyncio.run(
         _load_and_prepare_chunks()
     )
     if verbose:
@@ -296,6 +318,9 @@ def _build_kg_impl(
     threads = threading.enumerate()
     if verbose:
         console.print(f"[dim]Initial threads: {[t.name for t in threads]}[/dim]")
+
+    if len(threads) > 1:
+        console.print("[dim]Flushing background writes…[/dim]")
 
     while len(threads) > 1 and (time.time() - start_time) < max_wait:
         time.sleep(0.2)
@@ -374,6 +399,10 @@ def _build_kg_impl(
 
     if verbose:
         console.print(f"[dim]Command: {' '.join(cmd)}[/dim]")
+
+    console.print(
+        f"[bold]Building knowledge graph[/bold] ({loaded_chunk_count:,} chunks)…"
+    )
 
     # Run subprocess with inherited stdout/stderr for live output
     result = subprocess.run(
