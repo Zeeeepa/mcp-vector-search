@@ -382,9 +382,9 @@ async def _build_knowledge_graph(
         temp_path,
     ]
 
-    # Only force rebuild if fresh reindex
-    if fresh:
-        cmd.append("--force")
+    # Always force rebuild — reindex is a full re-chunking pipeline so the KG
+    # must be rebuilt regardless of whether the run is incremental or fresh.
+    cmd.append("--force")
 
     if verbose:
         cmd.append("--verbose")
