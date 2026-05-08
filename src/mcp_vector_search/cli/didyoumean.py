@@ -482,7 +482,7 @@ def add_common_suggestions(ctx: click.Context | None, command_name: str) -> None
 
     # Get available commands from the context
     available_commands = []
-    if hasattr(ctx, "command") and hasattr(ctx.command, "commands"):
+    if ctx is not None and isinstance(ctx.command, click.Group):
         available_commands = list(ctx.command.commands.keys())
 
     if not available_commands:
