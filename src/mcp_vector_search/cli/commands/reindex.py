@@ -375,8 +375,18 @@ async def _build_knowledge_graph(
     except RuntimeError:
         pass  # No event loop in current thread
 
-    # Set new event loop policy to ensure clean state
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+    # Reset event loop policy to a clean state
+    import sys as _sys
+
+    if _sys.platform != "win32":
+        try:
+            import uvloop as _uvloop
+
+            _uvloop.install()
+        except ImportError:
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+    else:
+        asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
     # Give background threads time to terminate
     # Issue #166: 1 second is sufficient for the drain before spawning the KG

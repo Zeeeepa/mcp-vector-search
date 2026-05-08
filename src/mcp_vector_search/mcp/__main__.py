@@ -9,6 +9,15 @@ from .server import run_mcp_server
 
 def main():
     """Main entry point for the MCP server."""
+    # Install uvloop as the asyncio event loop on Linux/macOS (~2x faster than default)
+    if sys.platform != "win32":
+        try:
+            import uvloop
+
+            uvloop.install()
+        except ImportError:
+            pass
+
     # Allow specifying project root as command line argument
     project_root = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 

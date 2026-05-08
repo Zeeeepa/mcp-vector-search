@@ -49,6 +49,15 @@ def _raise_file_descriptor_limit() -> None:
 # This ensures it's set before any database operations
 _raise_file_descriptor_limit()
 
+# Install uvloop as the asyncio event loop on Linux/macOS (~2x faster than default)
+if sys.platform != "win32":
+    try:
+        import uvloop as _uvloop
+
+        _uvloop.install()
+    except ImportError:
+        pass
+
 
 # ============================================================================
 # SIGNAL HANDLERS - Register early for crash diagnostics
