@@ -3055,7 +3055,7 @@ class KnowledgeGraph:
                 {"name": name},
             )
             if result.has_next():
-                return result.get_next()[0]
+                return cast(Any, result.get_next())[0]
 
             # For generic names, require exact match (no partial matching)
             if name.lower() in generic_names:
@@ -3077,7 +3077,7 @@ class KnowledgeGraph:
                 {"name": name},
             )
             if result.has_next():
-                return result.get_next()[0]
+                return cast(Any, result.get_next())[0]
 
             return None
         except Exception as e:
@@ -3135,7 +3135,7 @@ class KnowledgeGraph:
 
             entities = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -3204,7 +3204,7 @@ class KnowledgeGraph:
 
             rows = []
             while result.has_next():
-                rows.append(result.get_next())
+                rows.append(cast(Any, result.get_next()))
 
             # For multi-tag AND: keep only sections that also have every other tag
             if len(tags) > 1:
@@ -3221,7 +3221,7 @@ class KnowledgeGraph:
                     )
                     section_tags: set[str] = set()
                     while tag_result.has_next():
-                        section_tags.add(tag_result.get_next()[0])
+                        section_tags.add(cast(Any, tag_result.get_next())[0])
                     if remaining_tags.issubset(section_tags):
                         filtered_rows.append(row)
                     if len(filtered_rows) >= limit:
@@ -3284,7 +3284,7 @@ class KnowledgeGraph:
 
             calls = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 calls.append({"id": row[0], "name": row[1], "direction": row[2]})
 
             return calls
@@ -3357,7 +3357,7 @@ class KnowledgeGraph:
                     "depth_reached": 0,
                     "truncated": False,
                 }
-            row = entry_result.get_next()
+            row = cast(Any, entry_result.get_next())
             entry_node = {
                 "id": row[0],
                 "name": row[1],
@@ -3423,7 +3423,7 @@ class KnowledgeGraph:
 
             neighbors: list[tuple[str, str, str, str]] = []
             while result.has_next():
-                r = result.get_next()
+                r = cast(Any, result.get_next())
                 neighbors.append((r[0], r[1], r[2], r[3]))
 
             if not neighbors and len(current_path) > 1:
@@ -3527,7 +3527,7 @@ class KnowledgeGraph:
             )
             all_shas: list[str] = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 sha = row[0]
                 if sha:
                     all_shas.append(sha)
@@ -3551,7 +3551,7 @@ class KnowledgeGraph:
                     {"sha": sha},
                 )
                 while r2.has_next():
-                    row = r2.get_next()
+                    row = cast(Any, r2.get_next())
                     entities.append(
                         {
                             "id": row[0],
@@ -3604,7 +3604,7 @@ class KnowledgeGraph:
 
             rows: list[tuple[str, str, str, str]] = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 rows.append((row[0], row[1], row[2] or "", row[3]))
 
             callers: list[dict[str, Any]] = []
@@ -3655,7 +3655,7 @@ class KnowledgeGraph:
             seen: set[str] = set()
             history: list[dict[str, Any]] = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 sha = row[3] or ""
                 key = f"{row[2]}:{sha}"
                 if key not in seen:
@@ -3714,7 +3714,7 @@ class KnowledgeGraph:
 
             hierarchy = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 hierarchy.append({"id": row[0], "name": row[1], "relation": row[2]})
 
             return hierarchy
@@ -3761,7 +3761,7 @@ class KnowledgeGraph:
 
             docs = []
             while result.has_next():
-                row = result.get_next()
+                row = cast(Any, result.get_next())
                 docs.append(
                     {
                         "id": row[0],
@@ -3806,7 +3806,7 @@ class KnowledgeGraph:
             "MATCH (p:Project) RETURN p.id, p.name LIMIT 1"
         )
         if project_result.has_next():
-            row = project_result.get_next()
+            row = cast(Any, project_result.get_next())
             nodes.append(
                 {
                     "id": row[0],
@@ -3820,7 +3820,7 @@ class KnowledgeGraph:
         # 2. Person nodes (all - usually small)
         person_result = self._execute_query("MATCH (p:Person) RETURN p.id, p.name")
         while person_result.has_next():
-            row = person_result.get_next()
+            row = cast(Any, person_result.get_next())
             nodes.append(
                 {
                     "id": row[0],
@@ -3843,7 +3843,7 @@ class KnowledgeGraph:
         """)
         type_to_group = {"file": 1, "module": 2, "class": 3, "function": 4, "method": 4}
         while top_entities_result.has_next():
-            row = top_entities_result.get_next()
+            row = cast(Any, top_entities_result.get_next())
             nodes.append(
                 {
                     "id": row[0],
@@ -3864,7 +3864,7 @@ class KnowledgeGraph:
             RETURN type, cnt
         """)
         while type_counts_result.has_next():
-            row = type_counts_result.get_next()
+            row = cast(Any, type_counts_result.get_next())
             entity_type, count = row[0], row[1]
             if count > 50:  # Only aggregate large groups
                 nodes.append(
@@ -3914,7 +3914,7 @@ class KnowledgeGraph:
                     """)
                     node_ids_set = set(node_ids)
                     while rel_result.has_next():
-                        row = rel_result.get_next()
+                        row = cast(Any, rel_result.get_next())
                         source_id, target_id = row[0], row[1]
                         # Only include links where both nodes are visible
                         if source_id in node_ids_set and target_id in node_ids_set:
@@ -3946,7 +3946,7 @@ class KnowledgeGraph:
         """Count entities with given label."""
         try:
             result = self._execute_query(f"MATCH (n:{label}) RETURN count(n)")
-            return result.get_next()[0] if result.has_next() else 0
+            return cast(Any, result.get_next())[0] if result.has_next() else 0
         except Exception:
             return 0
 
@@ -3981,7 +3981,7 @@ class KnowledgeGraph:
                     LIMIT {max_per_type}
                 """)
                 while result.has_next():
-                    row = result.get_next()
+                    row = cast(Any, result.get_next())
                     nodes.append(
                         {
                             "id": row[0],
@@ -4007,7 +4007,7 @@ class KnowledgeGraph:
                     "method": 4,
                 }
                 while result.has_next():
-                    row = result.get_next()
+                    row = cast(Any, result.get_next())
                     nodes.append(
                         {
                             "id": row[0],
@@ -4045,7 +4045,7 @@ class KnowledgeGraph:
                     LIMIT 100
                 """)
                 while result.has_next():
-                    row = result.get_next()
+                    row = cast(Any, result.get_next())
                     neighbor_type = row[2].lower() if row[2] else "unknown"
                     if neighbor_type not in neighbor_counts:
                         neighbor_counts[neighbor_type] = 0
@@ -4088,7 +4088,7 @@ class KnowledgeGraph:
                     LIMIT 100
                 """)
                 while result.has_next():
-                    row = result.get_next()
+                    row = cast(Any, result.get_next())
                     neighbor_type = row[2].lower() if row[2] else "unknown"
                     if neighbor_type not in neighbor_counts:
                         neighbor_counts[neighbor_type] = 0
@@ -4175,7 +4175,7 @@ class KnowledgeGraph:
 
             # Collect entities and their file paths for subproject detection
             while entity_result.has_next():
-                row = entity_result.get_next()
+                row = cast(Any, entity_result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -4195,7 +4195,7 @@ class KnowledgeGraph:
                 """
             )
             while doc_result.has_next():
-                row = doc_result.get_next()
+                row = cast(Any, doc_result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -4210,7 +4210,7 @@ class KnowledgeGraph:
                 "MATCH (t:Tag) RETURN t.id AS id, t.name AS name"
             )
             while tag_result.has_next():
-                row = tag_result.get_next()
+                row = cast(Any, tag_result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -4225,7 +4225,7 @@ class KnowledgeGraph:
                 "MATCH (p:Person) RETURN p.id AS id, p.name AS name"
             )
             while person_result.has_next():
-                row = person_result.get_next()
+                row = cast(Any, person_result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -4240,7 +4240,7 @@ class KnowledgeGraph:
                 "MATCH (p:Project) RETURN p.id AS id, p.name AS name"
             )
             while project_result.has_next():
-                row = project_result.get_next()
+                row = cast(Any, project_result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -4255,7 +4255,7 @@ class KnowledgeGraph:
                 "MATCH (t:Topic) RETURN t.id AS id, t.name AS name"
             )
             while topic_result.has_next():
-                row = topic_result.get_next()
+                row = cast(Any, topic_result.get_next())
                 entities.append(
                     {
                         "id": row[0],
@@ -4372,7 +4372,7 @@ class KnowledgeGraph:
                     )
 
                     while rel_result.has_next():
-                        row = rel_result.get_next()
+                        row = cast(Any, rel_result.get_next())
                         links.append(
                             {
                                 "source": row[0],
@@ -4394,7 +4394,7 @@ class KnowledgeGraph:
                     """
                 )
                 while follows_result.has_next():
-                    row = follows_result.get_next()
+                    row = cast(Any, follows_result.get_next())
                     links.append(
                         {
                             "source": row[0],
@@ -4415,7 +4415,7 @@ class KnowledgeGraph:
                     """
                 )
                 while references_result.has_next():
-                    row = references_result.get_next()
+                    row = cast(Any, references_result.get_next())
                     links.append(
                         {
                             "source": row[0],
@@ -4436,7 +4436,7 @@ class KnowledgeGraph:
                     """
                 )
                 while demonstrates_result.has_next():
-                    row = demonstrates_result.get_next()
+                    row = cast(Any, demonstrates_result.get_next())
                     links.append(
                         {
                             "source": row[0],
@@ -4458,7 +4458,7 @@ class KnowledgeGraph:
                     """
                 )
                 while has_tag_result.has_next():
-                    row = has_tag_result.get_next()
+                    row = cast(Any, has_tag_result.get_next())
                     links.append(
                         {
                             "source": row[0],
@@ -4480,7 +4480,7 @@ class KnowledgeGraph:
                     """
                 )
                 while authored_result.has_next():
-                    row = authored_result.get_next()
+                    row = cast(Any, authored_result.get_next())
                     links.append(
                         {
                             "source": row[0],
@@ -4501,7 +4501,7 @@ class KnowledgeGraph:
                     """
                 )
                 while part_of_result.has_next():
-                    row = part_of_result.get_next()
+                    row = cast(Any, part_of_result.get_next())
                     links.append(
                         {
                             "source": row[0],
@@ -4565,7 +4565,7 @@ class KnowledgeGraph:
         """Count nodes in a given table; returns 0 if table missing or query fails."""
         try:
             result = self._execute_query(f"MATCH (n:{table}) RETURN count(n) AS cnt")
-            return result.get_next()[0] if result.has_next() else 0
+            return cast(Any, result.get_next())[0] if result.has_next() else 0
         except Exception:
             return 0
 
@@ -4575,7 +4575,7 @@ class KnowledgeGraph:
             result = self._execute_query(
                 f"MATCH ()-[r:{table}]->() RETURN count(r) AS cnt"
             )
-            return result.get_next()[0] if result.has_next() else 0
+            return cast(Any, result.get_next())[0] if result.has_next() else 0
         except Exception:
             return 0
 
@@ -4594,7 +4594,9 @@ class KnowledgeGraph:
                 "MATCH (e:CodeEntity) RETURN count(e) AS count"
             )
             total_entities = (
-                entity_result.get_next()[0] if entity_result.has_next() else 0
+                cast(Any, entity_result.get_next())[0]
+                if entity_result.has_next()
+                else 0
             )
 
             # Get all distinct entity types and their counts
@@ -4607,25 +4609,31 @@ class KnowledgeGraph:
             )
             entity_types = {}
             while entity_types_result.has_next():
-                row = entity_types_result.get_next()
+                row = cast(Any, entity_types_result.get_next())
                 entity_types[row[0]] = row[1]
 
             # Count doc sections
             doc_result = self._execute_query(
                 "MATCH (d:DocSection) RETURN count(d) AS count"
             )
-            doc_count = doc_result.get_next()[0] if doc_result.has_next() else 0
+            doc_count = (
+                cast(Any, doc_result.get_next())[0] if doc_result.has_next() else 0
+            )
 
             # Count tags
             tag_result = self._execute_query("MATCH (t:Tag) RETURN count(t) AS count")
-            tag_count = tag_result.get_next()[0] if tag_result.has_next() else 0
+            tag_count = (
+                cast(Any, tag_result.get_next())[0] if tag_result.has_next() else 0
+            )
 
             # Count persons
             person_result = self._execute_query(
                 "MATCH (p:Person) RETURN count(p) AS count"
             )
             person_count = (
-                person_result.get_next()[0] if person_result.has_next() else 0
+                cast(Any, person_result.get_next())[0]
+                if person_result.has_next()
+                else 0
             )
 
             # Count projects
@@ -4633,21 +4641,27 @@ class KnowledgeGraph:
                 "MATCH (p:Project) RETURN count(p) AS count"
             )
             project_count = (
-                project_result.get_next()[0] if project_result.has_next() else 0
+                cast(Any, project_result.get_next())[0]
+                if project_result.has_next()
+                else 0
             )
 
             # Count repositories
             repo_result = self._execute_query(
                 "MATCH (r:Repository) RETURN count(r) AS count"
             )
-            repo_count = repo_result.get_next()[0] if repo_result.has_next() else 0
+            repo_count = (
+                cast(Any, repo_result.get_next())[0] if repo_result.has_next() else 0
+            )
 
             # Count branches
             branch_result = self._execute_query(
                 "MATCH (b:Branch) RETURN count(b) AS count"
             )
             branch_count = (
-                branch_result.get_next()[0] if branch_result.has_next() else 0
+                cast(Any, branch_result.get_next())[0]
+                if branch_result.has_next()
+                else 0
             )
 
             # Count commits
@@ -4655,21 +4669,27 @@ class KnowledgeGraph:
                 "MATCH (c:Commit) RETURN count(c) AS count"
             )
             commit_count = (
-                commit_result.get_next()[0] if commit_result.has_next() else 0
+                cast(Any, commit_result.get_next())[0]
+                if commit_result.has_next()
+                else 0
             )
 
             # Count languages
             lang_result = self._execute_query(
                 "MATCH (l:ProgrammingLanguage) RETURN count(l) AS count"
             )
-            lang_count = lang_result.get_next()[0] if lang_result.has_next() else 0
+            lang_count = (
+                cast(Any, lang_result.get_next())[0] if lang_result.has_next() else 0
+            )
 
             # Count frameworks
             framework_result = self._execute_query(
                 "MATCH (f:ProgrammingFramework) RETURN count(f) AS count"
             )
             framework_count = (
-                framework_result.get_next()[0] if framework_result.has_next() else 0
+                cast(Any, framework_result.get_next())[0]
+                if framework_result.has_next()
+                else 0
             )
 
             # Count test nodes (issue #156)
@@ -4708,7 +4728,9 @@ class KnowledgeGraph:
                         f"MATCH ()-[r:{rel_type}]->() RETURN count(r) AS count"
                     )
                     rel_counts[rel_type.lower()] = (
-                        rel_result.get_next()[0] if rel_result.has_next() else 0
+                        cast(Any, rel_result.get_next())[0]
+                        if rel_result.has_next()
+                        else 0
                     )
                 except Exception:
                     rel_counts[rel_type.lower()] = 0
@@ -4782,32 +4804,42 @@ class KnowledgeGraph:
                 "MATCH (e:CodeEntity) RETURN count(e) AS count"
             )
             entity_count = (
-                entity_result.get_next()[0] if entity_result.has_next() else 0
+                cast(Any, entity_result.get_next())[0]
+                if entity_result.has_next()
+                else 0
             )
 
             # Count doc sections
             doc_result = self._execute_query(
                 "MATCH (d:DocSection) RETURN count(d) AS count"
             )
-            doc_count = doc_result.get_next()[0] if doc_result.has_next() else 0
+            doc_count = (
+                cast(Any, doc_result.get_next())[0] if doc_result.has_next() else 0
+            )
 
             # Count tags
             tag_result = self._execute_query("MATCH (t:Tag) RETURN count(t) AS count")
-            tag_count = tag_result.get_next()[0] if tag_result.has_next() else 0
+            tag_count = (
+                cast(Any, tag_result.get_next())[0] if tag_result.has_next() else 0
+            )
 
             # Count document nodes
             document_result = self._execute_query(
                 "MATCH (d:Document) RETURN count(d) AS count"
             )
             document_count = (
-                document_result.get_next()[0] if document_result.has_next() else 0
+                cast(Any, document_result.get_next())[0]
+                if document_result.has_next()
+                else 0
             )
 
             # Count topics
             topic_result = self._execute_query(
                 "MATCH (t:Topic) RETURN count(t) AS count"
             )
-            topic_count = topic_result.get_next()[0] if topic_result.has_next() else 0
+            topic_count = (
+                cast(Any, topic_result.get_next())[0] if topic_result.has_next() else 0
+            )
 
             # Count test nodes (issue #156)
             test_suite_count = self._count_nodes("TestSuite")
@@ -4849,7 +4881,11 @@ class KnowledgeGraph:
                     rel_result = self._execute_query(
                         f"MATCH ()-[r:{rel_type}]->() RETURN count(r) AS count"
                     )
-                    count = rel_result.get_next()[0] if rel_result.has_next() else 0
+                    count = (
+                        cast(Any, rel_result.get_next())[0]
+                        if rel_result.has_next()
+                        else 0
+                    )
                     relationships[rel_type.lower()] = count
                 except Exception:
                     relationships[rel_type.lower()] = 0
@@ -4899,25 +4935,33 @@ class KnowledgeGraph:
                 "MATCH (e:CodeEntity) RETURN count(e) AS count"
             )
             entity_count = (
-                entity_result.get_next()[0] if entity_result.has_next() else 0
+                cast(Any, entity_result.get_next())[0]
+                if entity_result.has_next()
+                else 0
             )
 
             # Count doc sections
             doc_result = self._execute_query(
                 "MATCH (d:DocSection) RETURN count(d) AS count"
             )
-            doc_count = doc_result.get_next()[0] if doc_result.has_next() else 0
+            doc_count = (
+                cast(Any, doc_result.get_next())[0] if doc_result.has_next() else 0
+            )
 
             # Count tags
             tag_result = self._execute_query("MATCH (t:Tag) RETURN count(t) AS count")
-            tag_count = tag_result.get_next()[0] if tag_result.has_next() else 0
+            tag_count = (
+                cast(Any, tag_result.get_next())[0] if tag_result.has_next() else 0
+            )
 
             # Count document nodes
             document_result = self._execute_query(
                 "MATCH (d:Document) RETURN count(d) AS count"
             )
             document_count = (
-                document_result.get_next()[0] if document_result.has_next() else 0
+                cast(Any, document_result.get_next())[0]
+                if document_result.has_next()
+                else 0
             )
 
             # Count persons
@@ -4925,7 +4969,9 @@ class KnowledgeGraph:
                 "MATCH (p:Person) RETURN count(p) AS count"
             )
             person_count = (
-                person_result.get_next()[0] if person_result.has_next() else 0
+                cast(Any, person_result.get_next())[0]
+                if person_result.has_next()
+                else 0
             )
 
             # Count projects
@@ -4933,21 +4979,27 @@ class KnowledgeGraph:
                 "MATCH (p:Project) RETURN count(p) AS count"
             )
             project_count = (
-                project_result.get_next()[0] if project_result.has_next() else 0
+                cast(Any, project_result.get_next())[0]
+                if project_result.has_next()
+                else 0
             )
 
             # Count repositories
             repo_result = self._execute_query(
                 "MATCH (r:Repository) RETURN count(r) AS count"
             )
-            repo_count = repo_result.get_next()[0] if repo_result.has_next() else 0
+            repo_count = (
+                cast(Any, repo_result.get_next())[0] if repo_result.has_next() else 0
+            )
 
             # Count branches
             branch_result = self._execute_query(
                 "MATCH (b:Branch) RETURN count(b) AS count"
             )
             branch_count = (
-                branch_result.get_next()[0] if branch_result.has_next() else 0
+                cast(Any, branch_result.get_next())[0]
+                if branch_result.has_next()
+                else 0
             )
 
             # Count commits
@@ -4955,14 +5007,18 @@ class KnowledgeGraph:
                 "MATCH (c:Commit) RETURN count(c) AS count"
             )
             commit_count = (
-                commit_result.get_next()[0] if commit_result.has_next() else 0
+                cast(Any, commit_result.get_next())[0]
+                if commit_result.has_next()
+                else 0
             )
 
             # Count topics
             topic_result = self._execute_query(
                 "MATCH (t:Topic) RETURN count(t) AS count"
             )
-            topic_count = topic_result.get_next()[0] if topic_result.has_next() else 0
+            topic_count = (
+                cast(Any, topic_result.get_next())[0] if topic_result.has_next() else 0
+            )
 
             # Count relationships by type
             rel_counts = {}
@@ -4994,7 +5050,9 @@ class KnowledgeGraph:
                         f"MATCH ()-[r:{rel_type}]->() RETURN count(r) AS count"
                     )
                     rel_counts[rel_type.lower()] = (
-                        rel_result.get_next()[0] if rel_result.has_next() else 0
+                        cast(Any, rel_result.get_next())[0]
+                        if rel_result.has_next()
+                        else 0
                     )
                 except Exception:
                     rel_counts[rel_type.lower()] = 0
@@ -5082,7 +5140,7 @@ class KnowledgeGraph:
             docs_result = self._execute_query(query, {})
             rows = []
             while docs_result.has_next():
-                rows.append(docs_result.get_next())
+                rows.append(cast(Any, docs_result.get_next()))
 
             for row in rows:
                 (
@@ -5132,7 +5190,7 @@ class KnowledgeGraph:
 
             sections_by_doc: dict[str, list[dict[str, Any]]] = {}
             while sections_result.has_next():
-                row = sections_result.get_next()
+                row = cast(Any, sections_result.get_next())
                 doc_id = row[0]
                 if doc_id not in sections_by_doc:
                     sections_by_doc[doc_id] = []
@@ -5163,7 +5221,7 @@ class KnowledgeGraph:
 
             refs_by_doc: dict[str, list[dict[str, str]]] = {}
             while refs_result.has_next():
-                row = refs_result.get_next()
+                row = cast(Any, refs_result.get_next())
                 doc_id = row[0]
                 if doc_id not in refs_by_doc:
                     refs_by_doc[doc_id] = []
@@ -5194,7 +5252,7 @@ class KnowledgeGraph:
 
             tags_by_doc: dict[str, list[str]] = {}
             while tags_result.has_next():
-                row = tags_result.get_next()
+                row = cast(Any, tags_result.get_next())
                 tags_by_doc[row[0]] = row[1]
 
             for category_docs in result["categories"].values():
@@ -5229,7 +5287,7 @@ class KnowledgeGraph:
         )
         topics: list[dict[str, str]] = []
         while topics_result.has_next():
-            row = topics_result.get_next()
+            row = cast(Any, topics_result.get_next())
             topics.append({"id": row[0], "name": row[1]})
 
         # Get documents per topic
@@ -5243,7 +5301,7 @@ class KnowledgeGraph:
             )
             docs: list[dict[str, Any]] = []
             while docs_result.has_next():
-                row = docs_result.get_next()
+                row = cast(Any, docs_result.get_next())
                 docs.append(
                     {
                         "id": row[0],
@@ -5328,7 +5386,7 @@ class KnowledgeGraph:
 
                 pattern_samples = []
                 while result.has_next():
-                    row = result.get_next()
+                    row = cast(Any, result.get_next())
                     pattern_samples.append(
                         {"source": row[0], "rel": row[1], "target": row[2]}
                     )
