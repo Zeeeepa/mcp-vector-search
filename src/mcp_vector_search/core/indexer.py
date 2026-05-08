@@ -767,14 +767,14 @@ class SemanticIndexer:
             # Detect file moves/renames — update metadata instead of re-chunking.
             # Also returns a file_hash_cache (Path → hash) so we skip double-hashing
             # during the change detection loop below.
-            detected_moves, _moved_old_paths, file_hash_cache = self._detect_file_moves(
+            detected_moves, _, file_hash_cache = self._detect_file_moves(
                 all_files, indexed_file_hashes
             )
             if detected_moves:
                 logger.info(
                     f"Detected {len(detected_moves)} file move(s), updating metadata..."
                 )
-                for old_path, new_path, _file_hash in detected_moves:
+                for old_path, new_path, _ in detected_moves:
                     chunks_updated = await self.chunks_backend.update_file_path(  # type: ignore[union-attr]
                         old_path, new_path
                     )
@@ -1300,14 +1300,14 @@ class SemanticIndexer:
                 )
 
             # Detect file moves/renames — update metadata instead of re-chunking
-            detected_moves, _moved_old_paths, file_hash_cache = self._detect_file_moves(
+            detected_moves, _, file_hash_cache = self._detect_file_moves(
                 all_files, indexed_file_hashes
             )
             if detected_moves:
                 logger.info(
                     f"Detected {len(detected_moves)} file move(s), updating metadata..."
                 )
-                for old_path, new_path, _file_hash in detected_moves:
+                for old_path, new_path, _ in detected_moves:
                     chunks_updated = await self.chunks_backend.update_file_path(
                         old_path, new_path
                     )
@@ -1878,14 +1878,14 @@ class SemanticIndexer:
                             )
 
                         # Detect file moves/renames — update metadata instead of re-chunking
-                        detected_moves, _moved_old_paths, file_hash_cache = (
-                            self._detect_file_moves(all_files, indexed_file_hashes)
+                        detected_moves, _, file_hash_cache = self._detect_file_moves(
+                            all_files, indexed_file_hashes
                         )
                         if detected_moves:
                             logger.info(
                                 f"Detected {len(detected_moves)} file move(s), updating metadata..."
                             )
-                            for old_path, new_path, _file_hash in detected_moves:
+                            for old_path, new_path, _ in detected_moves:
                                 chunks_updated = (
                                     await self.chunks_backend.update_file_path(
                                         old_path, new_path
@@ -2137,7 +2137,7 @@ class SemanticIndexer:
         )
 
     async def _parse_and_prepare_file(
-        self, file_path: Path, force_reindex: bool = False, skip_delete: bool = False
+        self, file_path: Path, _force_reindex: bool = False, skip_delete: bool = False
     ) -> tuple[list[CodeChunk], dict[str, Any] | None]:
         """Parse file and prepare chunks with metrics (no database insertion).
 
@@ -2146,7 +2146,7 @@ class SemanticIndexer:
 
         Args:
             file_path: Path to the file to parse
-            force_reindex: Whether to force reindexing (always deletes existing chunks)
+            _force_reindex: Whether to force reindexing (always deletes existing chunks)
             skip_delete: If True, skip delete operation (used when building fresh database)
 
         Returns:
