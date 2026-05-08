@@ -505,7 +505,7 @@ def add_common_suggestions(ctx: click.Context | None, command_name: str) -> None
         console.print("\n[yellow]Did you mean one of these?[/yellow]")
 
         # Show up to 3 best matches
-        for cmd, _ratio in fuzzy_matches[:3]:
+        for cmd, _ in fuzzy_matches[:3]:
             console.print(format_command_suggestion(cmd, show_examples=False))
 
         # Show example for the best match
