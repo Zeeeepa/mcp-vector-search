@@ -183,6 +183,9 @@ async def _run_reindex(
         files = result.get("files_processed", 0)
         chunks = result.get("chunks_created", 0)
         embedded = result.get("chunks_embedded", 0)
+        changed_files = result.get("changed_files", []) or []
+        deleted_files = result.get("deleted_files", []) or []
+        files_for_kg = sorted(set(changed_files) | set(deleted_files))
 
         print_success(
             f"✓ Reindex complete: {files:,} files, {chunks:,} chunks, "
@@ -193,7 +196,13 @@ async def _run_reindex(
         try:
             console.print()
             console.print("[cyan]🔗 Building knowledge graph...[/cyan]")
-            await _build_knowledge_graph(project_root, database, verbose)
+            await _build_knowledge_graph(
+                project_root,
+                database,
+                verbose,
+                files_to_delete=files_for_kg,
+                fresh=fresh,
+            )
             console.print("[green]✓ Knowledge graph built successfully[/green]")
         except KeyboardInterrupt:
             raise
@@ -212,7 +221,11 @@ async def _run_reindex(
 
 
 async def _build_knowledge_graph(
-    project_root: Path, database, verbose: bool = False
+    project_root: Path,
+    database,
+    verbose: bool = False,
+    files_to_delete: list[str] | None = None,
+    fresh: bool = False,
 ) -> None:
     """Build knowledge graph from indexed chunks using subprocess approach.
 
@@ -220,6 +233,14 @@ async def _build_knowledge_graph(
         project_root: Project root directory
         database: Database instance (should be open)
         verbose: Show verbose output
+        files_to_delete: Optional list of relative file paths whose KG entities
+            should be deleted before building (incremental mode). When provided
+            with ``fresh=False``, only chunks belonging to these files are
+            shipped to the subprocess. An empty list still triggers the
+            subprocess "up to date" fast-exit. ``None`` falls back to full
+            rebuild for backward compatibility.
+        fresh: If True, perform a full KG rebuild (--force). When False and
+            ``files_to_delete`` is not None, perform an incremental update.
 
     Raises:
         Exception: If KG build fails
@@ -260,7 +281,17 @@ async def _build_knowledge_graph(
     if verbose:
         console.print(f"[dim]Found {chunk_count} chunks to process[/dim]")
 
-    # Load all chunks in batches from chunks.lance table
+    # Decide incremental vs full mode:
+    # - fresh=True OR files_to_delete is None -> full rebuild (legacy path)
+    # - fresh=False AND files_to_delete is a list -> incremental
+    #   (ship only chunks for changed files; subprocess deletes entities for
+    #   `files_to_delete` first, then inserts the supplied chunks)
+    incremental = not fresh and files_to_delete is not None
+    changed_set: set[str] = set(files_to_delete or []) if incremental else set()
+
+    # Load chunks in batches from chunks.lance table.
+    # In incremental mode we filter by file_path so we only ship the chunks
+    # whose entities will be re-inserted on the KG side.
     chunks = []
     batch_size = 5000
     offset = 0
@@ -283,14 +314,27 @@ async def _build_knowledge_graph(
 
             # Convert to list of dicts (similar format to database.iter_chunks_batched)
             batch_dicts = result.to_pylist()
+            scanned = len(batch_dicts)
+            if incremental:
+                batch_dicts = [
+                    d for d in batch_dicts if str(d.get("file_path", "")) in changed_set
+                ]
             chunks.extend(batch_dicts)
-            offset += len(batch_dicts)
+            # Advance by number of rows scanned, NOT by filtered len, so we
+            # don't re-scan rows that were filtered out.
+            offset += scanned
         except Exception as e:
             logger.error(f"Failed to load chunk batch at offset {offset}: {e}")
             break
 
     if verbose:
-        console.print(f"[dim]Loaded {len(chunks)} chunks[/dim]")
+        if incremental:
+            console.print(
+                f"[dim]Incremental mode: loaded {len(chunks)} chunks for "
+                f"{len(changed_set)} changed file(s)[/dim]"
+            )
+        else:
+            console.print(f"[dim]Loaded {len(chunks)} chunks[/dim]")
 
     # Serialize chunks to temp JSON file
     temp_fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="kg_chunks_")
@@ -381,9 +425,32 @@ async def _build_knowledge_graph(
         temp_path,
     ]
 
-    # Always force rebuild — reindex is a full re-chunking pipeline so the KG
-    # must be rebuilt regardless of whether the run is incremental or fresh.
-    cmd.append("--force")
+    # Wire incremental vs full rebuild:
+    # - fresh=True or no files_to_delete provided -> full rebuild (--force)
+    # - fresh=False with files_to_delete (list, possibly empty) -> diff mode
+    #   The subprocess deletes entities for listed files first, then inserts
+    #   only the chunks we shipped. An empty list takes the "up to date"
+    #   fast-exit inside the subprocess.
+    files_to_delete_tmp: str | None = None
+    if incremental:
+        fd2, files_to_delete_tmp = tempfile.mkstemp(
+            suffix=".json", prefix="kg_files_to_delete_"
+        )
+        try:
+            with open(files_to_delete_tmp, "w") as f:
+                json.dump(list(files_to_delete or []), f)
+        finally:
+            import os as _os
+
+            _os.close(fd2)
+        cmd.extend(["--files-to-delete", files_to_delete_tmp])
+        if verbose:
+            console.print(
+                f"[dim]Incremental KG mode: {len(files_to_delete or [])} "
+                f"file(s) to diff[/dim]"
+            )
+    else:
+        cmd.append("--force")
 
     if verbose:
         cmd.append("--verbose")
@@ -392,34 +459,46 @@ async def _build_knowledge_graph(
     # Run subprocess off-thread so we don't block the asyncio loop while
     # the KG build runs (issue #166). Mirrors indexer._build_kg_background().
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: subprocess.run(  # nosec B603 - args fully controlled
-            cmd,
-            check=False,
-            stdout=None,  # Inherit stdout
-            stderr=None,  # Inherit stderr
-        ),
-    )
-
-    if result.returncode != 0:
-        if result.returncode not in (0, 1):
-            # Unexpected exit code — likely a native LanceDB/Kuzu crash
-            # (e.g. SIGSEGV=11, OS-defined=120) rather than an application error.
-            logger.error(
-                "KG subprocess exited with unexpected code %d. "
-                "This is typically a native LanceDB or Kuzu crash during initialization. "
-                "To recover: rm -rf .mcp-vector-search/lance/*/_transactions/ && mvs index --force",
-                result.returncode,
-            )
-        # Clean up temp file
-        try:
-            Path(temp_path).unlink()
-        except Exception as e:
-            logger.debug("Failed to clean up temp file %s: %s", temp_path, e)
-        raise Exception(
-            f"KG build subprocess failed with exit code {result.returncode}"
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(  # nosec B603 - args fully controlled
+                cmd,
+                check=False,
+                stdout=None,  # Inherit stdout
+                stderr=None,  # Inherit stderr
+            ),
         )
 
-    if verbose:
-        console.print("[green]✓ KG build subprocess completed[/green]")
+        if result.returncode != 0:
+            if result.returncode not in (0, 1):
+                # Unexpected exit code — likely a native LanceDB/Kuzu crash
+                # (e.g. SIGSEGV=11, OS-defined=120) rather than an application error.
+                logger.error(
+                    "KG subprocess exited with unexpected code %d. "
+                    "This is typically a native LanceDB or Kuzu crash during initialization. "
+                    "To recover: rm -rf .mcp-vector-search/lance/*/_transactions/ && mvs index --force",
+                    result.returncode,
+                )
+            # Clean up temp file
+            try:
+                Path(temp_path).unlink()
+            except Exception as e:
+                logger.debug("Failed to clean up temp file %s: %s", temp_path, e)
+            raise Exception(
+                f"KG build subprocess failed with exit code {result.returncode}"
+            )
+
+        if verbose:
+            console.print("[green]✓ KG build subprocess completed[/green]")
+    finally:
+        # Clean up the optional files-to-delete temp file (incremental mode)
+        if files_to_delete_tmp:
+            try:
+                Path(files_to_delete_tmp).unlink()
+            except Exception as e:
+                logger.debug(
+                    "Failed to clean up files-to-delete temp %s: %s",
+                    files_to_delete_tmp,
+                    e,
+                )

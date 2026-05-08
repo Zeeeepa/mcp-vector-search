@@ -392,6 +392,13 @@ class SemanticIndexer:
         self._kg_build_status: str = "not_started"
         self._enable_background_kg: bool = _cfg.enable_background_kg
 
+        # Track files that changed/were deleted in the most recent indexing run.
+        # Populated by _index_with_pipeline / _index_project_impl and consumed by
+        # _build_kg_background and chunk_and_embed callers (e.g. mvs reindex)
+        # to drive incremental KG updates instead of full rebuilds.
+        self._last_changed_files: list[str] = []
+        self._last_deleted_files: list[str] = []
+
         # Track atomic rebuild state (fresh database doesn't need deletes)
         self._atomic_rebuild_active: bool = False
 
@@ -420,6 +427,7 @@ class SemanticIndexer:
         """
         self._kg_build_status = "building"
         kg_kg_temp_chunks: str | None = None
+        kg_files_to_delete_tmp: str | None = None
         try:
             import asyncio as _asyncio
             import json as _json
@@ -441,11 +449,37 @@ class SemanticIndexer:
                 logger.error("Background KG build failed: database is None")
                 return
 
+            # Decide incremental vs full rebuild:
+            # - If a KG already exists on disk AND we have a tracked
+            #   changed/deleted list from this indexing run, run incrementally.
+            # - Otherwise (no prior KG, or no tracked diff) do a full rebuild.
+            kg_db_dir = self._mcp_dir / "knowledge_graph" / "code_kg"
+            kg_exists = kg_db_dir.exists()
+            has_diff_tracking = bool(
+                self._last_changed_files or self._last_deleted_files
+            ) or hasattr(self, "_last_changed_files")
+            # `hasattr` is True now that __init__ always initialises both lists,
+            # so the effective rule is: incremental if KG exists; full otherwise.
+            incremental = kg_exists and has_diff_tracking
+
+            # In incremental mode we only need to ship the chunks for files
+            # that actually changed — the subprocess deletes entities for
+            # listed files first, then inserts only the supplied chunks.
+            changed_set = set(self._last_changed_files)
             chunks: list[Any] = []
             for batch in self.database.iter_chunks_batched(batch_size=5000):
-                chunks.extend(batch)
+                if incremental:
+                    for c in batch:
+                        # CodeChunk.file_path may be Path or str
+                        rel = str(getattr(c, "file_path", ""))
+                        if rel in changed_set:
+                            chunks.append(c)
+                else:
+                    chunks.extend(batch)
 
-            if not chunks:
+            # In incremental mode, an empty (changed+deleted) list means the
+            # KG is already up to date — let the subprocess take its fast path.
+            if not chunks and not incremental:
                 self._kg_build_status = "complete"
                 logger.info("✓ Phase 3 skipped: no chunks available for KG build")
                 return
@@ -488,6 +522,33 @@ class SemanticIndexer:
                 "--skip-documents",  # fast mode for background
             ]
 
+            if incremental:
+                # Pass --files-to-delete pointing at a JSON list of
+                # changed + deleted relative paths.  An empty list still
+                # triggers the subprocess "up to date" fast-exit.
+                files_to_delete = list(
+                    set(self._last_changed_files) | set(self._last_deleted_files)
+                )
+                fd2, kg_files_to_delete_tmp = _tempfile.mkstemp(
+                    suffix=".json", prefix="kg_files_to_delete_"
+                )
+                try:
+                    with open(kg_files_to_delete_tmp, "w", encoding="utf-8") as f:
+                        _json.dump(files_to_delete, f)
+                finally:
+                    _os.close(fd2)
+                cmd.extend(["--files-to-delete", kg_files_to_delete_tmp])
+                logger.info(
+                    "Incremental KG update: %d changed + %d deleted "
+                    "= %d file(s) to diff",
+                    len(self._last_changed_files),
+                    len(self._last_deleted_files),
+                    len(files_to_delete),
+                )
+            else:
+                # Fresh KG: full rebuild
+                cmd.append("--force")
+
             # 3. Run the subprocess off-thread so we don't block the
             #    asyncio loop for the full build duration.
             result = await _asyncio.get_running_loop().run_in_executor(
@@ -517,6 +578,11 @@ class SemanticIndexer:
             if kg_kg_temp_chunks:
                 try:
                     Path(kg_kg_temp_chunks).unlink(missing_ok=True)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            if kg_files_to_delete_tmp:
+                try:
+                    Path(kg_files_to_delete_tmp).unlink(missing_ok=True)
                 except Exception:  # pragma: no cover - defensive
                     pass
 
@@ -666,6 +732,10 @@ class SemanticIndexer:
         # Filter files that need indexing
         files_to_index = all_files
         file_hash_cache: dict[Path, str] = {}
+        # Track files removed from disk for incremental KG updates.
+        # Computed BEFORE delete_files_batch so indexed_file_hashes still
+        # reflects the full prior state.
+        deleted_rel_paths: list[str] = []
         if (
             self.chunks_backend is None
         ):  # always set in __init__; guard for type narrowing
@@ -682,6 +752,17 @@ class SemanticIndexer:
             logger.info(
                 f"Loaded {len(indexed_file_hashes)} indexed files for change detection"
             )
+
+            # Compute deleted files: indexed previously but no longer on disk.
+            # Must run BEFORE any deletion so indexed_file_hashes is still the
+            # full prior state.
+            on_disk_rel = {str(f.relative_to(self.project_root)) for f in all_files}
+            deleted_rel_paths = [p for p in indexed_file_hashes if p not in on_disk_rel]
+            if deleted_rel_paths:
+                logger.info(
+                    f"Detected {len(deleted_rel_paths)} file(s) removed from disk "
+                    f"since last index"
+                )
 
             # Detect file moves/renames — update metadata instead of re-chunking.
             # Also returns a file_hash_cache (Path → hash) so we skip double-hashing
@@ -731,6 +812,18 @@ class SemanticIndexer:
             )
         else:
             logger.info(f"Force reindex: processing all {len(files_to_index)} files")
+
+        # Record changed + deleted files for incremental KG updates.
+        # Force reindex implies a full rebuild, so we leave both lists empty
+        # (caller will pass --force to KG subprocess).
+        if force_reindex:
+            self._last_changed_files = []
+            self._last_deleted_files = []
+        else:
+            self._last_changed_files = [
+                str(f.relative_to(self.project_root)) for f in files_to_index
+            ]
+            self._last_deleted_files = list(deleted_rel_paths)
 
         if not files_to_index:
             logger.info("All files are up to date")
@@ -1536,6 +1629,8 @@ class SemanticIndexer:
         # Adapt IndexResult -> dict shape expected by historical callers
         # (e.g. ``mvs reindex``). chunks_embedded mirrors chunks_indexed since
         # the pipeline embeds during the same run.
+        # `changed_files` / `deleted_files` are additive keys used by callers
+        # to drive incremental KG updates (see reindex._build_knowledge_graph).
         return {
             "files_processed": int(result.files_processed),
             "chunks_created": int(result.chunks_indexed),
@@ -1544,6 +1639,8 @@ class SemanticIndexer:
             "batches_processed": 0,
             "duration_seconds": float(result.duration_seconds),
             "errors": list(result.errors),
+            "changed_files": list(self._last_changed_files),
+            "deleted_files": list(self._last_deleted_files),
         }
 
     async def index_project(
@@ -1749,6 +1846,8 @@ class SemanticIndexer:
                 else:
                     # Filter files that need indexing
                     files_to_index = all_files
+                    # Track files removed from disk for incremental KG updates.
+                    deleted_rel_paths: list[str] = []
                     if not force_reindex:
                         # Use chunks_backend for change detection instead of metadata
                         logger.info(
@@ -1762,6 +1861,21 @@ class SemanticIndexer:
                         logger.info(
                             f"Loaded {len(indexed_file_hashes)} indexed files for change detection"
                         )
+
+                        # Compute deleted files: indexed previously but no longer on disk.
+                        # Must run BEFORE any deletion so indexed_file_hashes is the
+                        # full prior state.
+                        on_disk_rel = {
+                            str(f.relative_to(self.project_root)) for f in all_files
+                        }
+                        deleted_rel_paths = [
+                            p for p in indexed_file_hashes if p not in on_disk_rel
+                        ]
+                        if deleted_rel_paths:
+                            logger.info(
+                                f"Detected {len(deleted_rel_paths)} file(s) removed "
+                                f"from disk since last index"
+                            )
 
                         # Detect file moves/renames — update metadata instead of re-chunking
                         detected_moves, _moved_old_paths, file_hash_cache = (
@@ -1822,6 +1936,19 @@ class SemanticIndexer:
                         logger.info(
                             f"Force reindex: processing all {len(files_to_index)} files"
                         )
+
+                    # Record changed + deleted files for incremental KG updates.
+                    # Force reindex implies full rebuild — leave lists empty so
+                    # the KG subprocess gets --force.
+                    if force_reindex:
+                        self._last_changed_files = []
+                        self._last_deleted_files = []
+                    else:
+                        self._last_changed_files = [
+                            str(f.relative_to(self.project_root))
+                            for f in files_to_index
+                        ]
+                        self._last_deleted_files = list(deleted_rel_paths)
 
                     if files_to_index:
                         # Run Phase 1
