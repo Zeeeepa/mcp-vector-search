@@ -457,7 +457,7 @@ def format_command_suggestion(command: str, show_examples: bool = True) -> str:
         return f"  [bold cyan]{command}[/bold cyan]"
 
 
-def add_common_suggestions(ctx: click.Context, command_name: str) -> None:
+def add_common_suggestions(ctx: click.Context | None, command_name: str) -> None:
     """Add enhanced command suggestions to error messages.
 
     Args:

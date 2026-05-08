@@ -385,7 +385,7 @@ async def _build_knowledge_graph(
             _uvloop.install()
         except ImportError:
             asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    else:
+    else:  # type: ignore[unreachable]
         asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
     # Give background threads time to terminate

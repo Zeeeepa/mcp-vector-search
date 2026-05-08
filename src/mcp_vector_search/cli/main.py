@@ -31,7 +31,7 @@ def _raise_file_descriptor_limit() -> None:
     This raises the soft limit to 65535 (or the hard limit if lower).
     Only runs on Unix systems (Linux/macOS).
     """
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # type: ignore[unreachable]
         # Windows uses a different mechanism (no RLIMIT_NOFILE)
         return
 
@@ -62,15 +62,15 @@ if sys.platform != "win32":
 # ============================================================================
 # SIGNAL HANDLERS - Register early for crash diagnostics
 # ============================================================================
-def _handle_segfault(signum: int, frame) -> None:
+def _handle_segfault(_signum: int, _frame: object) -> None:
     """Handle segmentation faults with helpful error message.
 
     Segmentation faults typically occur due to corrupted ChromaDB index data
     or issues with native libraries (sentence-transformers, tree-sitter).
 
     Args:
-        signum: Signal number (SIGSEGV = 11)
-        frame: Current stack frame (unused)
+        _signum: Signal number (SIGSEGV = 11)
+        _frame: Current stack frame (unused)
     """
     error_message = """
 ╭─────────────────────────────────────────────────────────────────╮
@@ -94,7 +94,7 @@ def _handle_segfault(signum: int, frame) -> None:
     sys.exit(139)  # Standard segfault exit code (128 + 11)
 
 
-def _handle_sigbus(signum: int, frame) -> None:
+def _handle_sigbus(_signum: int, _frame: object) -> None:
     """Handle bus errors (SIGBUS) with helpful error message.
 
     SIGBUS on macOS typically occurs due to a memory conflict between
@@ -102,8 +102,8 @@ def _handle_sigbus(signum: int, frame) -> None:
     This can happen during or after indexing on Apple Silicon Macs.
 
     Args:
-        signum: Signal number (SIGBUS = 10 on macOS)
-        frame: Current stack frame (unused)
+        _signum: Signal number (SIGBUS = 10 on macOS)
+        _frame: Current stack frame (unused)
     """
     error_message = """
 ╭─────────────────────────────────────────────────────────────────╮
@@ -216,7 +216,7 @@ from .commands.profile import profile_app  # noqa: E402
 from .commands.progress import app as progress_app  # noqa: E402
 from .commands.reindex import reindex_app  # noqa: E402
 from .commands.reset import reset_app  # noqa: E402
-from .commands.search import search_app, search_main  # noqa: E402, F401
+from .commands.search import search_app  # noqa: E402, F401
 from .commands.setup import setup_app  # noqa: E402
 from .commands.skills import app as skills_app  # noqa: E402
 from .commands.status import main as status_main  # noqa: E402
@@ -580,13 +580,12 @@ def cli_with_suggestions():
     except click.Abort:
         # User interrupted (Ctrl+C)
         sys.exit(1)
-    except (SystemExit, click.exceptions.Exit) as e:
-        # Re-raise system exits and typer.Exit with their exit codes
-        if hasattr(e, "exit_code"):
-            sys.exit(e.exit_code)
-        elif hasattr(e, "code"):
-            sys.exit(e.code if e.code is not None else 0)
-        raise
+    except SystemExit as e:
+        # Re-raise system exits preserving the exit code
+        sys.exit(e.code if e.code is not None else 0)
+    except click.exceptions.Exit as e:
+        # click.exceptions.Exit uses .exit_code attribute
+        sys.exit(e.exit_code)
     except Exception as e:
         # For other exceptions, show error and exit if verbose logging is enabled
         # Suppress internal framework errors in normal operation
