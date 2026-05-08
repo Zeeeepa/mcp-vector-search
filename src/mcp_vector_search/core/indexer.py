@@ -534,16 +534,18 @@ class SemanticIndexer:
         """
         # Try multiple paths to get the model name
         if hasattr(self.database, "_embedding_function") and hasattr(
-            self.database._embedding_function, "model_name"
-        ):
-            return self.database._embedding_function.model_name
-        elif hasattr(self.database, "_collection") and hasattr(
-            self.database._collection, "_embedding_function"
-        ):
-            return self.database._collection._embedding_function.model_name
-        elif hasattr(self.database, "embedding_function") and hasattr(
-            self.database.embedding_function,
+            self.database._embedding_function,
             "model_name",  # type: ignore[attr-defined]
+        ):
+            return self.database._embedding_function.model_name  # type: ignore[attr-defined]
+        elif hasattr(self.database, "_collection") and hasattr(
+            self.database._collection,
+            "_embedding_function",  # type: ignore[attr-defined]
+        ):
+            return self.database._collection._embedding_function.model_name  # type: ignore[attr-defined]
+        elif hasattr(self.database, "embedding_function") and hasattr(
+            self.database.embedding_function,  # type: ignore[attr-defined]
+            "model_name",
         ):
             return self.database.embedding_function.model_name  # type: ignore[attr-defined]
 
@@ -943,7 +945,7 @@ class SemanticIndexer:
 
         # Get current embedding model dimensions
         if hasattr(self.database, "_embedding_function"):
-            model_name = self.database._embedding_function.model_name
+            model_name = self.database._embedding_function.model_name  # type: ignore[attr-defined]
             expected_dim = get_model_dimensions(model_name)
             logger.info(f"Current embedding model: {model_name} ({expected_dim}D)")
         else:
