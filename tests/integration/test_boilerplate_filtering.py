@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from mcp_vector_search.core.models import SearchResult
+from mcp_vector_search.core.result_enhancer import ResultEnhancer
 from mcp_vector_search.core.search import SemanticSearchEngine
 
 
@@ -48,19 +49,32 @@ class TestBoilerplateFilteringIntegration:
 
     @pytest.fixture
     def search_engine(self, mock_database, tmp_path):
-        """Create a search engine instance for testing."""
-        # Patch file reading to avoid actual file I/O
-        with patch.object(
-            SemanticSearchEngine,
-            "_read_file_lines_cached",
-            new=AsyncMock(return_value=[]),
+        """Create a search engine instance for testing.
+
+        Patches file reading on both SemanticSearchEngine and ResultEnhancer
+        for the lifetime of the fixture. The ResultEnhancer patch is
+        critical: without it, the internal enhancer raises FileNotFoundError
+        for synthetic test paths like "/test/user.py", causing the search
+        engine's stale-file filter to drop mock results.
+        """
+        with (
+            patch.object(
+                ResultEnhancer,
+                "read_file_lines_cached",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                SemanticSearchEngine,
+                "_read_file_lines_cached",
+                new=AsyncMock(return_value=[]),
+            ),
         ):
             engine = SemanticSearchEngine(
                 database=mock_database,
                 project_root=tmp_path,
                 similarity_threshold=0.3,
             )
-        return engine
+            yield engine
 
     @pytest.mark.asyncio
     async def test_boilerplate_penalty_applied_to_init_method(

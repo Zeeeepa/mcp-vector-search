@@ -90,6 +90,8 @@ def _configure_tokenizers_parallelism() -> None:
 # Configure before importing sentence_transformers
 _configure_tokenizers_parallelism()
 
+from typing import Any, cast
+
 import aiofiles
 from loguru import logger
 from sentence_transformers import SentenceTransformer
@@ -377,7 +379,7 @@ class EmbeddingCache:
         """Clear the in-memory cache."""
         self._memory_cache.clear()
 
-    def get_cache_stats(self) -> dict[str, any]:
+    def get_cache_stats(self) -> dict[str, Any]:
         """Get cache performance statistics.
 
         Returns:
@@ -489,30 +491,67 @@ class CodeBERTEmbeddingFunction:
                         f"This may take a few minutes."
                     )
 
-                # Fix 3: Use fp16 on CUDA/MPS for 2x arithmetic throughput and half VRAM.
-                # Wrapped in try/except so the import failure is non-fatal on torch-less envs.
-                try:
-                    import torch as _torch
+                # Backend selection: opt-in ONNX runtime via env var
+                # Default ("pytorch") preserves existing behavior unchanged.
+                _backend = os.environ.get(
+                    "MCP_VECTOR_SEARCH_BACKEND", "pytorch"
+                ).lower()
 
-                    _dtype = (
-                        _torch.float16 if device in ("cuda", "mps") else _torch.float32
-                    )
-                    _model_kwargs: dict = {"torch_dtype": _dtype}
-                except Exception:
-                    _model_kwargs = {}
+                if _backend == "onnx":
+                    # ONNX runtime for faster CPU embedding inference.
+                    # - Requires `optimum[onnxruntime]` (extras: mcp-vector-search[onnx])
+                    # - sentence-transformers >=2.7 supports backend="onnx" natively
+                    # - ONNX backend is CPU-only on macOS (no MPS/CUDA support)
+                    # - First run downloads/converts the model into ~/.cache/huggingface
+                    device = "cpu"
+                    logger.info("Using ONNX runtime for embeddings (CPU only)")
+                    try:
+                        with suppress_stdout_stderr():
+                            self.model = SentenceTransformer(
+                                model_name,
+                                device=device,
+                                trust_remote_code=True,
+                                backend="onnx",
+                            )
+                    except ImportError as exc:
+                        raise ImportError(
+                            "ONNX backend requires: pip install mcp-vector-search[onnx]"
+                        ) from exc
+                else:
+                    # Default PyTorch backend (unchanged behavior).
+                    # Fix 3: Use fp16 on CUDA/MPS for 2x arithmetic throughput
+                    # and half VRAM. Wrapped in try/except so the import failure
+                    # is non-fatal on torch-less envs.
+                    try:
+                        import torch as _torch
 
-                # trust_remote_code=True needed for CodeXEmbed and other models with custom code
-                # Suppress stdout to hide "BertModel LOAD REPORT" noise
-                with suppress_stdout_stderr():
-                    self.model = SentenceTransformer(
-                        model_name,
-                        device=device,
-                        trust_remote_code=True,
-                        model_kwargs=_model_kwargs,
-                    )
+                        _dtype = (
+                            _torch.float16
+                            if device in ("cuda", "mps")
+                            else _torch.float32
+                        )
+                        _model_kwargs: dict = {"torch_dtype": _dtype}
+                    except Exception:
+                        _model_kwargs = {}
+
+                    # trust_remote_code=True needed for CodeXEmbed and other
+                    # models with custom code. Suppress stdout to hide
+                    # "BertModel LOAD REPORT" noise.
+                    with suppress_stdout_stderr():
+                        self.model = SentenceTransformer(
+                            model_name,
+                            device=device,
+                            trust_remote_code=True,
+                            model_kwargs=_model_kwargs,
+                        )
 
                 # Get actual dimensions from loaded model
-                actual_dims = self.model.get_sentence_embedding_dimension()
+                _raw_dims = self.model.get_sentence_embedding_dimension()
+                if _raw_dims is None:
+                    raise EmbeddingError(
+                        f"Model {model_name} returned None for embedding dimension"
+                    )
+                actual_dims: int = _raw_dims
 
             self.model_name = model_name
             self.timeout = timeout
@@ -822,11 +861,18 @@ class BatchEmbeddingProcessor:
         # Use the cached batch size from the embedding function when not explicitly provided.
         # _detect_optimal_batch_size() is lru_cache'd, so calling it here is also safe,
         # but preferring the already-computed value on the function avoids any edge cases.
+        resolved_batch_size: int
         if batch_size is None:
-            batch_size = getattr(
-                embedding_function, "_encode_batch_size", _detect_optimal_batch_size()
+            resolved_batch_size = int(
+                getattr(
+                    embedding_function,
+                    "_encode_batch_size",
+                    _detect_optimal_batch_size(),
+                )
             )
-        self.batch_size = batch_size
+        else:
+            resolved_batch_size = batch_size
+        self.batch_size: int = resolved_batch_size
 
     async def embed_batches_parallel(
         self, texts: list[str], batch_size: int = 32, max_concurrent: int | None = None
@@ -928,7 +974,7 @@ class BatchEmbeddingProcessor:
         if not contents:
             return []
 
-        embeddings = []
+        embeddings: list[list[float] | None] = []
         uncached_contents = []
         uncached_indices = []
 
@@ -1003,7 +1049,8 @@ class BatchEmbeddingProcessor:
                 logger.error(f"Failed to generate embeddings: {e}")
                 raise EmbeddingError(f"Failed to generate embeddings: {e}") from e
 
-        return embeddings
+        # All None placeholders have been filled in by this point; cast is safe.
+        return cast(list[list[float]], embeddings)
 
     async def _sequential_embed(self, contents: list[str]) -> list[list[float]]:
         """Sequential embedding generation (fallback method).
@@ -1035,7 +1082,7 @@ class BatchEmbeddingProcessor:
                 raise
         return new_embeddings
 
-    def get_stats(self) -> dict[str, any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get processor statistics."""
         stats = {
             "model_name": self.embedding_function.model_name,

@@ -95,6 +95,9 @@ auditor = [
     "python-gnupg>=0.5.2",
     "PyGithub>=2.3.0",
 ]
+onnx = [
+    "optimum[onnxruntime]>=1.20.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/bobmatnyc/mcp-vector-search"
