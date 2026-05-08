@@ -193,7 +193,7 @@ async def _run_reindex(
         try:
             console.print()
             console.print("[cyan]🔗 Building knowledge graph...[/cyan]")
-            await _build_knowledge_graph(project_root, database, fresh, verbose)
+            await _build_knowledge_graph(project_root, database, verbose)
             console.print("[green]✓ Knowledge graph built successfully[/green]")
         except KeyboardInterrupt:
             raise
@@ -212,14 +212,13 @@ async def _run_reindex(
 
 
 async def _build_knowledge_graph(
-    project_root: Path, database, fresh: bool, verbose: bool = False
+    project_root: Path, database, verbose: bool = False
 ) -> None:
     """Build knowledge graph from indexed chunks using subprocess approach.
 
     Args:
         project_root: Project root directory
         database: Database instance (should be open)
-        fresh: If True, force rebuild from scratch; if False, incremental
         verbose: Show verbose output
 
     Raises:
