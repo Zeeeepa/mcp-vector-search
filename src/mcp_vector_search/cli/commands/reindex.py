@@ -336,7 +336,9 @@ async def _build_knowledge_graph(
     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
     # Give background threads time to terminate
-    max_wait = 3.0  # Wait up to 3 seconds
+    # Issue #166: 1 second is sufficient for the drain before spawning the KG
+    # subprocess; the previous 3 s upper bound was overly conservative.
+    max_wait = 1.0  # Wait up to 1 second
     start_time_wait = time.time()
     threads = threading.enumerate()
 
@@ -388,12 +390,17 @@ async def _build_knowledge_graph(
         cmd.append("--verbose")
         console.print(f"[dim]Command: {' '.join(cmd)}[/dim]")
 
-    # Run subprocess
-    result = subprocess.run(
-        cmd,
-        check=False,
-        stdout=None,  # Inherit stdout
-        stderr=None,  # Inherit stderr
+    # Run subprocess off-thread so we don't block the asyncio loop while
+    # the KG build runs (issue #166). Mirrors indexer._build_kg_background().
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: subprocess.run(  # nosec B603 - args fully controlled
+            cmd,
+            check=False,
+            stdout=None,  # Inherit stdout
+            stderr=None,  # Inherit stderr
+        ),
     )
 
     if result.returncode != 0:

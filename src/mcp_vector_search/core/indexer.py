@@ -1276,10 +1276,17 @@ class SemanticIndexer:
 
         # Build BM25 index — provide console feedback since this can take
         # 10-30 s for large projects (reads all chunks from LanceDB).
-        if self.progress_tracker:
-            sys.stderr.write("  Loading chunks for keyword index...\n")
-            sys.stderr.flush()
-        await self._build_bm25_index()
+        # Issue #166: Skip BM25 rebuild when no files were re-chunked. The
+        # existing BM25 index is still valid if no chunks changed.
+        if files_to_index:
+            if self.progress_tracker:
+                sys.stderr.write("  Loading chunks for keyword index...\n")
+                sys.stderr.flush()
+            await self._build_bm25_index()
+        else:
+            logger.info(
+                "No files changed; skipping BM25 rebuild (existing index reused)"
+            )
 
         # Finalize atomic rebuild if fresh and we processed files
         if fresh and atomic_rebuild_active and files_processed > 0:
@@ -1460,35 +1467,53 @@ class SemanticIndexer:
         }
 
     async def chunk_and_embed(self, fresh: bool = False, batch_size: int = 512) -> dict:
-        """Full index pipeline: chunk files then embed chunks.
+        """Full index pipeline: chunk files and embed chunks (parallel pipeline).
 
-        Convenience wrapper that runs both phases sequentially.
-        Equivalent to running chunk_files() followed by embed_chunks().
+        Delegates to ``_index_project_impl`` so chunking (Phase 1) and embedding
+        (Phase 2) overlap via the producer/consumer ``IndexPipeline`` introduced
+        in #124. This avoids the historical sequential bottleneck where reindex
+        ran ``chunk_files()`` then ``embed_chunks()`` back-to-back (issue #166).
 
         Args:
             fresh: If True, start from scratch (clear chunks + vectors).
-            batch_size: Number of chunks per embedding batch.
+            batch_size: Number of chunks per embedding batch (currently advisory;
+                pipeline configures its own embed batching).
 
         Returns:
-            Combined stats dict from both phases.
+            Combined stats dict matching the historical shape:
+            files_processed, chunks_created, files_skipped, chunks_embedded,
+            batches_processed, duration_seconds, errors.
         """
         logger.info(
             f"Starting chunk_and_embed (fresh={fresh}) for project: {self.project_root}"
         )
 
-        # Run both phases
-        chunk_result = await self.chunk_files(fresh=fresh)
-        embed_result = await self.embed_chunks(fresh=fresh, batch_size=batch_size)
+        # Honor caller-supplied batch size for the pipeline embed phase.
+        original_batch_size = self.batch_size
+        try:
+            self.batch_size = batch_size
+            result = await self._index_project_impl(
+                force_reindex=fresh,
+                show_progress=True,
+                skip_relationships=False,
+                phase="all",
+                metrics_json=False,
+                pipeline=True,
+            )
+        finally:
+            self.batch_size = original_batch_size
 
-        # Combine results
+        # Adapt IndexResult -> dict shape expected by historical callers
+        # (e.g. ``mvs reindex``). chunks_embedded mirrors chunks_indexed since
+        # the pipeline embeds during the same run.
         return {
-            "files_processed": chunk_result["files_processed"],
-            "chunks_created": chunk_result["chunks_created"],
-            "files_skipped": chunk_result["files_skipped"],
-            "chunks_embedded": embed_result["chunks_embedded"],
-            "batches_processed": embed_result["batches_processed"],
-            "duration_seconds": embed_result["duration_seconds"],
-            "errors": chunk_result["errors"] + embed_result["errors"],
+            "files_processed": int(result.files_processed),
+            "chunks_created": int(result.chunks_indexed),
+            "files_skipped": 0,
+            "chunks_embedded": int(result.chunks_indexed),
+            "batches_processed": 0,
+            "duration_seconds": float(result.duration_seconds),
+            "errors": list(result.errors),
         }
 
     async def index_project(
@@ -1915,7 +1940,21 @@ class SemanticIndexer:
             await self._finalize_atomic_rebuild()
 
         # Phase 3: Build BM25 index for hybrid search
-        await self._build_bm25_index()
+        # Issue #166: Skip rebuild when no files were re-indexed — the existing
+        # BM25 index is still valid. Build only when the path doesn't yet exist.
+        if indexed_count > 0:
+            await self._build_bm25_index()
+        else:
+            bm25_path = self._mcp_dir / "bm25_index.pkl"
+            if not bm25_path.exists():
+                logger.info(
+                    f"BM25 index missing at {bm25_path}, building from existing chunks..."
+                )
+                await self._build_bm25_index()
+            else:
+                logger.info(
+                    "No files re-indexed; skipping BM25 rebuild (existing index reused)"
+                )
 
         # Persist embedding model info into index_metadata.json
         try:
