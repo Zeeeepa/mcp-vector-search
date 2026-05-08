@@ -778,6 +778,8 @@ class SemanticIndexer:
                     f"Batch deleted {deleted_count} old chunks for {len(files_to_delete)} files"
                 )
 
+        if self.database is None:
+            raise RuntimeError("database must be initialized before indexing")
         pipeline = IndexPipeline(
             files_to_process=files_to_process,
             files_to_index=files_to_index,
@@ -953,6 +955,10 @@ class SemanticIndexer:
             raise ValueError("Cannot determine embedding model dimensions")
 
         # Check for dimension mismatch with existing vectors table
+        if self.vectors_backend is None:
+            raise RuntimeError("vectors_backend must be initialized")
+        if self.chunks_backend is None:
+            raise RuntimeError("chunks_backend must be initialized")
         if await self.vectors_backend.check_dimension_mismatch(expected_dim):
             logger.warning(
                 f"Dimension mismatch detected! Recreating vectors table with {expected_dim}D..."
@@ -1048,6 +1054,10 @@ class SemanticIndexer:
         # Handle atomic rebuild for fresh mode FIRST (replaces backend objects)
         if fresh:
             # Pre-initialize backends so _atomic_rebuild_databases can create new ones
+            if self.chunks_backend is None:
+                raise RuntimeError("chunks_backend must be initialized")
+            if self.vectors_backend is None:
+                raise RuntimeError("vectors_backend must be initialized")
             try:
                 await self.chunks_backend.initialize()
                 await self.vectors_backend.initialize()
@@ -1069,6 +1079,10 @@ class SemanticIndexer:
             atomic_rebuild_active = False
 
         # Initialize backends (new backends after atomic rebuild, or original ones)
+        if self.chunks_backend is None:
+            raise RuntimeError("chunks_backend must be initialized")
+        if self.vectors_backend is None:
+            raise RuntimeError("vectors_backend must be initialized")
         if self.chunks_backend._db is None:
             try:
                 await self.chunks_backend.initialize()
