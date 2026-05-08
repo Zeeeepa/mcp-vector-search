@@ -259,7 +259,7 @@ class SemanticIndexer:
             else SemanticIndexerConfig.from_env()
         )
 
-        self.database = database
+        self.database: VectorDatabase = database
         self.project_root = project_root
 
         # Resolve index_path: explicit parameter > config > INDEX_PATH env var > project_root
@@ -382,8 +382,10 @@ class SemanticIndexer:
         # Initialize two-phase backends (injectable for testing / custom storage)
         # Both use same db_path directory for LanceDB
         lance_path = self._mcp_dir / "lance"
-        self.chunks_backend = chunks_backend or ChunksBackend(lance_path)
-        self.vectors_backend = vectors_backend or VectorsBackend(lance_path)
+        self.chunks_backend: ChunksBackend = chunks_backend or ChunksBackend(lance_path)
+        self.vectors_backend: VectorsBackend = vectors_backend or VectorsBackend(
+            lance_path
+        )
 
         # Background KG build tracking
         self._kg_build_task: asyncio.Task | None = None
@@ -534,13 +536,13 @@ class SemanticIndexer:
         """
         # Try multiple paths to get the model name
         if hasattr(self.database, "_embedding_function") and hasattr(
-            self.database._embedding_function,
-            "model_name",  # type: ignore[attr-defined]
+            self.database._embedding_function,  # type: ignore[attr-defined]
+            "model_name",
         ):
             return self.database._embedding_function.model_name  # type: ignore[attr-defined]
         elif hasattr(self.database, "_collection") and hasattr(
-            self.database._collection,
-            "_embedding_function",  # type: ignore[attr-defined]
+            self.database._collection,  # type: ignore[attr-defined]
+            "_embedding_function",
         ):
             return self.database._collection._embedding_function.model_name  # type: ignore[attr-defined]
         elif hasattr(self.database, "embedding_function") and hasattr(
@@ -1009,6 +1011,12 @@ class SemanticIndexer:
         manager = AtomicRebuildManager(self._mcp_dir, self.config)
         active = await manager.rebuild(force=force)
         if active:
+            if manager.chunks_backend is None:
+                raise RuntimeError("AtomicRebuildManager must set chunks_backend")
+            if manager.vectors_backend is None:
+                raise RuntimeError("AtomicRebuildManager must set vectors_backend")
+            if manager.database is None:
+                raise RuntimeError("AtomicRebuildManager must set database")
             self.chunks_backend = manager.chunks_backend
             self.vectors_backend = manager.vectors_backend
             self.database = manager.database
@@ -1083,7 +1091,7 @@ class SemanticIndexer:
             raise RuntimeError("chunks_backend must be initialized")
         if self.vectors_backend is None:
             raise RuntimeError("vectors_backend must be initialized")
-        if self.chunks_backend._db is None:
+        if self.chunks_backend._db is None:  # type: ignore[attr-defined]
             try:
                 await self.chunks_backend.initialize()
             except DatabaseInitializationError as e:
@@ -1098,7 +1106,7 @@ class SemanticIndexer:
                     "files_skipped": 0,
                     "errors": [str(e)],
                 }
-        if self.vectors_backend._db is None:
+        if self.vectors_backend._db is None:  # type: ignore[attr-defined]
             try:
                 await self.vectors_backend.initialize()
             except DatabaseInitializationError as e:
@@ -1121,8 +1129,8 @@ class SemanticIndexer:
         if not self.metadata._metadata_file.exists():
             try:
                 chunk_count = (
-                    self.chunks_backend._table.count_rows()
-                    if self.chunks_backend._table
+                    self.chunks_backend._table.count_rows()  # type: ignore[attr-defined]
+                    if self.chunks_backend._table  # type: ignore[attr-defined]
                     else 0
                 )
                 if chunk_count > 0:
@@ -1171,6 +1179,7 @@ class SemanticIndexer:
             }
 
         # Filter files for incremental mode
+        file_hash_cache: dict[Path, str] = {}
         files_to_index = all_files
         if not fresh:
             # Incremental: only process changed files
@@ -1361,7 +1370,7 @@ class SemanticIndexer:
         )
 
         # Initialize backends (skip if already initialized)
-        if self.chunks_backend._db is None:
+        if self.chunks_backend._db is None:  # type: ignore[attr-defined]
             try:
                 await self.chunks_backend.initialize()
             except DatabaseInitializationError as e:
@@ -1377,7 +1386,7 @@ class SemanticIndexer:
                     "errors": [str(e)],
                     "duration_seconds": 0.0,
                 }
-        if self.vectors_backend._db is None:
+        if self.vectors_backend._db is None:  # type: ignore[attr-defined]
             try:
                 await self.vectors_backend.initialize()
             except DatabaseInitializationError as e:
@@ -1609,7 +1618,7 @@ class SemanticIndexer:
         phase: str = "all",
         metrics_json: bool = False,
         pipeline: bool = True,
-    ) -> int:
+    ) -> "IndexResult":
         """Internal implementation of index_project (no public exception wrapping)."""
         logger.info(
             f"Starting indexing of project: {self.project_root} (phase: {phase})"
@@ -2074,7 +2083,7 @@ class SemanticIndexer:
             List of success flags for each file
         """
         # Initialize backends if not already initialized
-        if self.chunks_backend._db is None:
+        if self.chunks_backend._db is None:  # type: ignore[attr-defined]
             await self.chunks_backend.initialize()
 
         all_chunks: list[CodeChunk] = []
@@ -2205,7 +2214,7 @@ class SemanticIndexer:
 
                     # Generate embeddings using database's embedding function
                     # Use __call__() which is the universal interface for all embedding functions
-                    embeddings = self.database.embedding_function(contents)
+                    embeddings = self.database.embedding_function(contents)  # type: ignore[attr-defined]
 
                     # Prepare chunks with vectors for vectors_backend
                     chunks_with_vectors = []
@@ -2280,7 +2289,7 @@ class SemanticIndexer:
             True if file was successfully indexed
         """
         # Initialize backends if not already initialized
-        if self.chunks_backend._db is None:
+        if self.chunks_backend._db is None:  # type: ignore[attr-defined]
             await self.chunks_backend.initialize()
 
         try:
@@ -2347,7 +2356,7 @@ class SemanticIndexer:
 
                 # Generate embeddings using database's embedding function
                 # Use __call__() which is the universal interface for all embedding functions
-                embeddings = self.database.embedding_function(contents)
+                embeddings = self.database.embedding_function(contents)  # type: ignore[attr-defined]
 
                 # Prepare chunks with vectors for vectors_backend
                 chunks_with_vectors = []
@@ -2496,11 +2505,11 @@ class SemanticIndexer:
         """
         import os as _os
 
-        if self.chunks_backend._table is None:
+        if self.chunks_backend._table is None:  # type: ignore[attr-defined]
             return
 
         # Read unique file paths from chunks table (column projection for speed)
-        scanner = self.chunks_backend._table.to_lance().scanner(columns=["file_path"])
+        scanner = self.chunks_backend._table.to_lance().scanner(columns=["file_path"])  # type: ignore[attr-defined]
         table = scanner.to_table()
         df = table.to_pandas()
 
@@ -2560,9 +2569,9 @@ class SemanticIndexer:
         """
         try:
             # Initialize backends if needed
-            if self.chunks_backend._db is None:
+            if self.chunks_backend._db is None:  # type: ignore[attr-defined]
                 await self.chunks_backend.initialize()
-            if self.vectors_backend._db is None:
+            if self.vectors_backend._db is None:  # type: ignore[attr-defined]
                 await self.vectors_backend.initialize()
 
             # Get stats from both backends
@@ -2619,9 +2628,9 @@ class SemanticIndexer:
         import os
 
         try:
-            if self.chunks_backend._db is None:
+            if self.chunks_backend._db is None:  # type: ignore[attr-defined]
                 await self.chunks_backend.initialize()
-            if self.vectors_backend._db is None:
+            if self.vectors_backend._db is None:  # type: ignore[attr-defined]
                 await self.vectors_backend.initialize()
 
             chunks_stats = await self.chunks_backend.get_stats()
@@ -2686,7 +2695,7 @@ class SemanticIndexer:
         """
         try:
             # Initialize chunks_backend if needed
-            if self.chunks_backend._db is None:
+            if self.chunks_backend._db is None:  # type: ignore[attr-defined]
                 await self.chunks_backend.initialize()
 
             # Get stats from chunks_backend (Phase 1 storage)
@@ -2724,7 +2733,7 @@ class SemanticIndexer:
         """
         try:
             # Initialize chunks_backend if needed
-            if self.chunks_backend._db is None:
+            if self.chunks_backend._db is None:  # type: ignore[attr-defined]
                 await self.chunks_backend.initialize()
 
             # Get stats from chunks_backend (Phase 1 storage)
@@ -2842,7 +2851,7 @@ class SemanticIndexer:
                     if hasattr(tables_response, "tables"):
                         health.tables_exist = list(tables_response.tables)
                     else:
-                        health.tables_exist = list(tables_response)
+                        health.tables_exist = [str(t) for t in tables_response]
 
                 except Exception as db_err:
                     health.details["db_error"] = str(db_err)
