@@ -252,7 +252,7 @@ class KnowledgeGraph:
         # Thread lock for Kuzu operations safety
         # We run Kuzu operations synchronously on the main asyncio thread
         # but use a lock to prevent any potential concurrent access
-        self._kuzu_lock = threading.Lock()
+        self._kuzu_lock = threading.RLock()
 
         # Lazy-built Contrastive LCA scorer over the CONTAINS hierarchy.
         # Set to None on construction and after each ``kg_build`` so that
