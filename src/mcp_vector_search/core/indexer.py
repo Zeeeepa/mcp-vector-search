@@ -534,22 +534,25 @@ class SemanticIndexer:
         Returns:
             Model name (e.g., "all-MiniLM-L6-v2", "graphcodebert-base")
         """
-        # Try multiple paths to get the model name
-        if hasattr(self.database, "_embedding_function") and hasattr(
-            self.database._embedding_function,  # type: ignore[attr-defined]
+        # Try multiple paths to get the model name.
+        # db is the concrete LanceVectorDatabase which exposes private attrs
+        # not declared on the VectorDatabase ABC — one cast covers all accesses.
+        db: Any = self.database
+        if hasattr(db, "_embedding_function") and hasattr(
+            db._embedding_function,
             "model_name",
         ):
-            return self.database._embedding_function.model_name  # type: ignore[attr-defined]
-        elif hasattr(self.database, "_collection") and hasattr(
-            self.database._collection,  # type: ignore[attr-defined]
+            return db._embedding_function.model_name
+        elif hasattr(db, "_collection") and hasattr(
+            db._collection,
             "_embedding_function",
         ):
-            return self.database._collection._embedding_function.model_name  # type: ignore[attr-defined]
-        elif hasattr(self.database, "embedding_function") and hasattr(
-            self.database.embedding_function,  # type: ignore[attr-defined]
+            return db._collection._embedding_function.model_name
+        elif hasattr(db, "embedding_function") and hasattr(
+            db.embedding_function,
             "model_name",
         ):
-            return self.database.embedding_function.model_name  # type: ignore[attr-defined]
+            return db.embedding_function.model_name
 
         # Fallback: extract from model name if available
         # This handles cases where the embedding function doesn't expose model_name
@@ -947,9 +950,11 @@ class SemanticIndexer:
 
         logger.info("🔄 Re-embedding all chunks with current embedding model...")
 
-        # Get current embedding model dimensions
-        if hasattr(self.database, "_embedding_function"):
-            model_name = self.database._embedding_function.model_name  # type: ignore[attr-defined]
+        # Get current embedding model dimensions.
+        # db is concrete LanceVectorDatabase — one Any cast covers private attr access.
+        db: Any = self.database
+        if hasattr(db, "_embedding_function"):
+            model_name = db._embedding_function.model_name
             expected_dim = get_model_dimensions(model_name)
             logger.info(f"Current embedding model: {model_name} ({expected_dim}D)")
         else:
@@ -2212,9 +2217,11 @@ class SemanticIndexer:
                     # The stored chunk.content is left untouched.
                     contents = [build_embed_text(chunk) for chunk in all_chunks]
 
-                    # Generate embeddings using database's embedding function
-                    # Use __call__() which is the universal interface for all embedding functions
-                    embeddings = self.database.embedding_function(contents)  # type: ignore[attr-defined]
+                    # Generate embeddings using database's embedding function.
+                    # db is concrete LanceVectorDatabase — one Any cast covers the
+                    # embedding_function attr not declared on the VectorDatabase ABC.
+                    db: Any = self.database
+                    embeddings = db.embedding_function(contents)
 
                     # Prepare chunks with vectors for vectors_backend
                     chunks_with_vectors = []
@@ -2354,9 +2361,11 @@ class SemanticIndexer:
                 # The stored chunk.content is left untouched.
                 contents = [build_embed_text(chunk) for chunk in chunks_with_hierarchy]
 
-                # Generate embeddings using database's embedding function
-                # Use __call__() which is the universal interface for all embedding functions
-                embeddings = self.database.embedding_function(contents)  # type: ignore[attr-defined]
+                # Generate embeddings using database's embedding function.
+                # db is concrete LanceVectorDatabase — one Any cast covers the
+                # embedding_function attr not declared on the VectorDatabase ABC.
+                db: Any = self.database
+                embeddings = db.embedding_function(contents)
 
                 # Prepare chunks with vectors for vectors_backend
                 chunks_with_vectors = []
