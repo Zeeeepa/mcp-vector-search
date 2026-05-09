@@ -544,7 +544,9 @@ def create_app(viz_dir: Path) -> FastAPI:
             kg = KnowledgeGraph(kg_path)
             await kg.initialize()
 
-            neighbors = await kg.get_node_neighbors(node_id, hops=hops, max_per_type=30)
+            neighbors = await kg.get_node_neighbors(
+                node_id, _hops=hops, max_per_type=30
+            )
 
             await kg.close()
 

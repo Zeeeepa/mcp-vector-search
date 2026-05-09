@@ -17,10 +17,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import kuzu
 from loguru import logger
+
+if TYPE_CHECKING:
+    from .lca_scorer import ContrastiveLCAScorer
 
 
 @dataclass
@@ -4037,18 +4040,21 @@ class KnowledgeGraph:
             return 0
 
     async def get_node_neighbors(
-        self, node_id: str, hops: int = 1, max_per_type: int = 30
+        self, node_id: str, _hops: int = 1, max_per_type: int = 30
     ) -> dict:
         """Get neighboring nodes and edges for expansion.
 
         Args:
             node_id: ID of node to expand
-            hops: Number of relationship hops (default 1)
+            _hops: Number of relationship hops (default 1). Currently the
+                implementation always expands 1 hop; the parameter is kept
+                for API compatibility with the visualization server.
             max_per_type: Max neighbors per type before aggregating
 
         Returns:
             {"nodes": [...], "links": [...], "aggregations": [...]}
         """
+
         if not self._initialized:
             await self.initialize()
 
@@ -5756,7 +5762,7 @@ class KnowledgeGraph:
     # Contrastive LCA scoring
     # ------------------------------------------------------------------
 
-    async def build_lca_scorer(self) -> "ContrastiveLCAScorer":  # type: ignore[name-defined]
+    async def build_lca_scorer(self) -> "ContrastiveLCAScorer":
         """Build (or rebuild) the Contrastive LCA scorer from CONTAINS edges.
 
         Reads the CONTAINS hierarchy out of Kuzu, materializes a
@@ -5800,7 +5806,7 @@ class KnowledgeGraph:
         )
         return scorer
 
-    async def get_lca_scorer(self) -> "ContrastiveLCAScorer":  # type: ignore[name-defined]
+    async def get_lca_scorer(self) -> "ContrastiveLCAScorer":
         """Return the cached LCA scorer, building it on first call."""
         if self._lca_scorer is None:
             await self.build_lca_scorer()
