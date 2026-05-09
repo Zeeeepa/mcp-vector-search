@@ -293,9 +293,9 @@ class IndexPipeline:
                 batch_files_processed = 0
 
                 # FIX 2 (CRITICAL PERFORMANCE): Use process pool for batch parsing.
-                batch_paths = [fp for fp, _rel, _hash in batch]
-                rel_paths = {fp: rel for fp, rel, _hash in batch}
-                file_hashes = {fp: fh for fp, _rel, fh in batch}
+                batch_paths = [fp for fp, _, _ in batch]
+                rel_paths = {fp: rel for fp, rel, _ in batch}
+                file_hashes = {fp: fh for fp, _, fh in batch}
 
                 if self.use_multiprocessing and len(batch_paths) > 1:
                     parse_results = await self.chunk_processor.parse_files_multiprocess(
@@ -316,9 +316,7 @@ class IndexPipeline:
                     file_hash = file_hashes.get(file_path, "")
 
                     if idx % 10 == 0:
-                        is_ok, usage_pct, _status = (
-                            self.memory_monitor.check_memory_limit()
-                        )
+                        is_ok, usage_pct, _ = self.memory_monitor.check_memory_limit()
                         if not is_ok:
                             logger.warning(
                                 f"Memory limit exceeded during chunking "
@@ -396,7 +394,7 @@ class IndexPipeline:
                         )
                     )
                     cancel_task = asyncio.ensure_future(self.pipeline_cancel.wait())
-                    _done, pending = await asyncio.wait(
+                    _, pending = await asyncio.wait(
                         [put_task, cancel_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
@@ -528,7 +526,7 @@ class IndexPipeline:
                             contents = [build_embed_text(c) for c in emb_batch]
 
                             # Check memory before expensive embedding
-                            is_ok, usage_pct, _status = (
+                            is_ok, usage_pct, _ = (
                                 self.memory_monitor.check_memory_limit()
                             )
                             if not is_ok:
