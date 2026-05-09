@@ -4,8 +4,10 @@ This module extracts entities and relationships from code chunks
 and populates the Kuzu knowledge graph.
 """
 
+import gc
 import hashlib
 import json
+import os
 import re
 import subprocess
 from datetime import UTC, datetime
@@ -33,6 +35,124 @@ from .knowledge_graph import (
 from .models import CodeChunk
 from .progress import ProgressTracker
 from .resource_manager import get_batch_size_for_memory, get_configured_workers
+
+# --- Memory-aware build tunables ----------------------------------------------
+# These envs let operators dial back the KG build's memory footprint on large
+# codebases.  Defaults are conservative for a repo that hits the original
+# 160GB-RAM blow-up (474K entities, 147K rels, 17K files).
+#
+# MCP_VECTOR_SEARCH_KG_BATCH_SIZE
+#     Cap on items held in memory per UNWIND batch (entity / relationship /
+#     authorship insertion).  Default: 1000.
+# MCP_VECTOR_SEARCH_KG_GIT_METADATA
+#     If "false" (case-insensitive), skip git-metadata extraction (persons,
+#     AUTHORED, MODIFIED).  Auto-disabled when the repo has more files than
+#     ``MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD`` unless the env var is
+#     explicitly set to "true".
+# MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD
+#     File-count threshold used to auto-skip git metadata.  Default: 10000.
+# MCP_VECTOR_SEARCH_KG_GIT_LOG_LIMIT
+#     Maximum commits parsed from git log during authorship extraction.
+#     Default: 5000 (matches legacy behavior).
+
+
+def _get_kg_batch_size(default: int = 1000) -> int:
+    """Read ``MCP_VECTOR_SEARCH_KG_BATCH_SIZE`` with a safe fallback."""
+    raw = os.environ.get("MCP_VECTOR_SEARCH_KG_BATCH_SIZE")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            return default
+        return value
+    except ValueError:
+        logger.warning(
+            "Invalid MCP_VECTOR_SEARCH_KG_BATCH_SIZE=%r, using default %d", raw, default
+        )
+        return default
+
+
+def _get_kg_large_repo_threshold(default: int = 10000) -> int:
+    """Read ``MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD`` with a safe fallback."""
+    raw = os.environ.get("MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            return default
+        return value
+    except ValueError:
+        return default
+
+
+def _should_extract_git_metadata(file_count: int) -> bool:
+    """Decide whether to extract git metadata (persons + AUTHORED/MODIFIED).
+
+    Resolution order:
+      1. Explicit ``MCP_VECTOR_SEARCH_KG_GIT_METADATA`` value (true/false) wins.
+      2. Otherwise, auto-disable on repos larger than
+         ``MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD`` files (default 10000).
+
+    Args:
+        file_count: Number of distinct files in the build input.
+
+    Returns:
+        ``True`` when git metadata extraction should run.
+    """
+    raw = os.environ.get("MCP_VECTOR_SEARCH_KG_GIT_METADATA")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    threshold = _get_kg_large_repo_threshold()
+    return file_count <= threshold
+
+
+def _get_git_log_commit_limit(default: int = 5000) -> int:
+    """Cap on commits parsed during authorship extraction."""
+    raw = os.environ.get("MCP_VECTOR_SEARCH_KG_GIT_LOG_LIMIT")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            return default
+        return value
+    except ValueError:
+        return default
+
+
+def _check_kg_memory_guard(file_count: int, console: Console | None = None) -> None:
+    """Warn when available RAM looks too small for a KG build of this size.
+
+    The build's peak memory grows with entity count, relationship count, and —
+    most aggressively — git history retention.  We use file count as a
+    proxy because it's available before any chunks are loaded.
+
+    For large repos (>10K files) we recommend at least 16 GB of *available*
+    RAM.  Below that we emit a warning suggesting ``--skip-kg`` or setting
+    ``MCP_VECTOR_SEARCH_KG_GIT_METADATA=false``.
+    """
+    if file_count <= _get_kg_large_repo_threshold():
+        return
+    try:
+        import psutil
+
+        avail_gb = psutil.virtual_memory().available / (1024**3)
+    except Exception:
+        return  # psutil missing or unreadable — don't block the build
+    if avail_gb < 16.0:
+        msg = (
+            f"⚠ Large KG build ({file_count:,} files) but only "
+            f"{avail_gb:.1f} GB RAM available. "
+            "Consider running with --skip-kg, or set "
+            "MCP_VECTOR_SEARCH_KG_GIT_METADATA=false to skip the most "
+            "memory-intensive phase."
+        )
+        if console is not None:
+            console.print(f"[yellow]{msg}[/yellow]")
+        logger.warning(msg)
+
 
 console = Console()
 
@@ -801,12 +921,11 @@ class KGBuilder:
             )
 
         # Batch size for relationship insertion.
-        # Previously 50 as a workaround for a Kuzu CSR assertion bug, but that was
-        # overly conservative and caused 500 round-trips for 25k relationships.
-        # 500 matches the node insertion batch size and is safe; the Kuzu bug only
-        # triggered with very large batches (thousands). If assertion failures
-        # resurface, fall back to 50.
-        safe_batch_size = 500
+        # Default 500 matches the node insertion batch size; the Kuzu CSR
+        # assertion bug only triggered with very large batches (thousands).
+        # Operators can override via MCP_VECTOR_SEARCH_KG_BATCH_SIZE to trade
+        # round-trips for memory headroom on huge repos.
+        safe_batch_size = min(500, _get_kg_batch_size())
 
         total_inserted = 0
         total_skipped = 0
@@ -928,23 +1047,59 @@ class KGBuilder:
                 f"Total skipped: {total_skipped} relationships with invalid node references"
             )
 
+        # Phase 3 produced large transient lists (relationships dict, valid_rels,
+        # validated entity-id sets).  Drop and collect before Phase 4 inflates
+        # memory again with git history.
+        for _key in list(relationships.keys()):
+            relationships[_key].clear()
+        relationships.clear()
+        valid_entity_ids.clear()
+        gc.collect()
+
         # PHASE 4: Extract work entities from git (persons, project, authorship)
+        # On large repos, the AUTHORED/MODIFIED extraction can dominate memory
+        # because git log --name-only retains a per-file author history that
+        # then fans out to one edge per (author × entity).  Operators can
+        # disable this phase via MCP_VECTOR_SEARCH_KG_GIT_METADATA=false; it
+        # is also auto-skipped on repos with more files than
+        # MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD (default 10000) unless
+        # explicitly enabled.
+        distinct_files = len({e.file_path for e in code_entities if e.file_path})
+        do_git_metadata = _should_extract_git_metadata(distinct_files)
+        _check_kg_memory_guard(distinct_files, console)
+
         if progress_tracker:
             progress_tracker.phase("Extracting git metadata")
         else:
             console.print("[cyan]👤 Phase 4: Extracting git metadata...[/cyan]")
 
-        # Extract persons from git log
-        persons = self._extract_git_authors_sync(stats, progress_tracker)
-
-        # Extract project info
+        # Project info is cheap and useful regardless of the git-metadata gate.
         project = self._extract_project_info_sync(stats, progress_tracker)
 
-        # Extract AUTHORED relationships
-        if code_entities and persons:
-            self._extract_authorship_sync(
-                code_entities, persons, stats, progress_tracker
+        if not do_git_metadata:
+            msg = (
+                f"Skipping git metadata extraction (file_count={distinct_files:,}, "
+                "large-repo guard active). Set MCP_VECTOR_SEARCH_KG_GIT_METADATA=true "
+                "to force-enable."
             )
+            if progress_tracker:
+                progress_tracker.warning(msg)
+            else:
+                console.print(f"[yellow]{msg}[/yellow]")
+            stats["persons"] = 0
+            stats["authored"] = 0
+            stats["modified"] = 0
+        else:
+            persons = self._extract_git_authors_sync(stats, progress_tracker)
+
+            # Extract AUTHORED / MODIFIED relationships
+            if code_entities and persons:
+                self._extract_authorship_sync(
+                    code_entities, persons, stats, progress_tracker
+                )
+            # Drop the persons dict now — only id-keyed edges are needed downstream.
+            persons.clear()
+            gc.collect()
 
         # Extract PART_OF relationships
         if code_entities and project:
@@ -3047,7 +3202,11 @@ class KGBuilder:
     def _extract_git_authors_sync(
         self, stats: dict, progress_tracker: Optional["ProgressTracker"] = None
     ) -> dict[str, "Person"]:
-        """Extract Person entities from git log (synchronous).
+        """Extract Person entities from git log (synchronous, streaming).
+
+        Streams ``git log`` line-by-line via ``subprocess.Popen`` instead of
+        capturing the entire stdout buffer in memory.  For repos with deep
+        history this avoids holding the full commit list in RAM at once.
 
         Args:
             stats: Statistics dictionary to update
@@ -3056,27 +3215,31 @@ class KGBuilder:
         Returns:
             Dictionary mapping person_id to Person
         """
-        persons = {}
+        persons: dict[str, Person] = {}
 
+        proc: subprocess.Popen[str] | None = None
         try:
-            # Get all commits with author info
-            result = subprocess.run(
-                ["git", "log", "--format=%H|%an|%ae|%aI", "--all"],
+            # Stream commits with author info.  No --all: most repos only need
+            # the current branch's history; --all blows up bare-cloned monorepos.
+            proc = subprocess.Popen(
+                ["git", "log", "--format=%H|%an|%ae|%aI"],
                 cwd=self.project_root,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
-                check=True,
-                timeout=30,
+                bufsize=1,  # line-buffered
             )
+            assert proc.stdout is not None
 
-            for line in result.stdout.strip().split("\n"):
+            for line in proc.stdout:
+                line = line.rstrip("\n")
                 if not line:
                     continue
                 parts = line.split("|")
                 if len(parts) < 4:
                     continue
 
-                commit_sha, name, email, timestamp = parts[:4]
+                _commit_sha, name, email, timestamp = parts[:4]
                 email_hash = self._hash_email(email)
                 person_id = f"person:{email_hash}"
 
@@ -3090,16 +3253,31 @@ class KGBuilder:
                         last_commit=timestamp,
                     )
                 else:
-                    persons[person_id].commits_count += 1
-                    if timestamp > persons[person_id].last_commit:
-                        persons[person_id].last_commit = timestamp
-                    if timestamp < persons[person_id].first_commit:
-                        persons[person_id].first_commit = timestamp
+                    p = persons[person_id]
+                    p.commits_count += 1
+                    if p.last_commit is None or timestamp > (p.last_commit or ""):
+                        p.last_commit = timestamp
+                    if p.first_commit is None or timestamp < (p.first_commit or ""):
+                        p.first_commit = timestamp
+
+            # Wait for git to finish.  60s is generous; persons map is bounded
+            # by unique-author count (small) so we don't worry about memory here.
+            try:
+                proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                logger.warning("git log (authors) timed out after 60 seconds")
 
             # Add persons to KG (batch sync)
             if persons:
                 person_list = list(persons.values())
-                stats["persons"] = self.kg.add_persons_batch_sync(person_list)
+                batch_size = _get_kg_batch_size()
+                stats["persons"] = self.kg.add_persons_batch_sync(
+                    person_list, batch_size=batch_size
+                )
+                # Free the intermediate list immediately.
+                del person_list
+                gc.collect()
                 if progress_tracker:
                     progress_tracker.item(
                         f"{stats['persons']:,} persons from git", done=True
@@ -3107,14 +3285,18 @@ class KGBuilder:
                 else:
                     logger.info(f"✓ Extracted {len(persons)} person entities from git")
 
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"Git log failed: {e}")
-        except subprocess.TimeoutExpired:
-            logger.warning("Git log timed out after 30 seconds")
         except FileNotFoundError:
             logger.debug("Git not found, skipping git author extraction")
         except Exception as e:
             logger.debug(f"Failed to extract git authors: {e}")
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+            if proc is not None and proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except Exception:  # nosec - best-effort cleanup
+                    pass
 
         return persons
 
@@ -4483,8 +4665,16 @@ class KGBuilder:
     ) -> None:
         """Extract AUTHORED and MODIFIED relationships using git log (synchronous).
 
-        The first (oldest) author of a file gets AUTHORED relationship.
-        All subsequent authors get MODIFIED relationships.
+        Streams git log output instead of buffering ``--name-only`` for thousands
+        of commits, and inserts edges through ``add_authored_modified_batch_sync``
+        instead of issuing one MATCH/CREATE per (person, entity) pair.  Both
+        changes were necessary to keep the build's RSS bounded on large repos
+        (the original implementation could exceed 100 GB of resident memory on
+        17K-file codebases).
+
+        The first (oldest) author of a file gets AUTHORED.  Every subsequent
+        unique author gets MODIFIED.  At most 5 entities per file are linked,
+        matching the original behavior.
 
         Args:
             code_entities: List of CodeEntity objects
@@ -4492,8 +4682,8 @@ class KGBuilder:
             stats: Statistics dictionary to update
             progress_tracker: Optional progress tracker for status updates
         """
-        authored_count = 0
-        modified_count = 0
+        batch_size = _get_kg_batch_size()
+        commit_limit = _get_git_log_commit_limit()
 
         # Build file -> entity mapping
         file_to_entities: dict[str, list[str]] = {}
@@ -4514,100 +4704,157 @@ class KGBuilder:
         # Collect ALL authors per file (list of tuples: person_id, timestamp, commit_sha)
         file_authors_map: dict[str, list[tuple[str, str, str]]] = {}
 
+        proc: subprocess.Popen[str] | None = None
         try:
-            # Get commits with files - use more history for better authorship detection
-            # Increased from 500 to 5000 to capture more authorship information
-            result = subprocess.run(
-                ["git", "log", "--format=%H|%an|%ae|%aI", "--name-only", "-n", "5000"],
+            # Stream git log so we don't materialize the entire commit/file
+            # listing in a single `result.stdout` string.  ``--name-only``
+            # output for 5K commits across 17K files can be hundreds of MB
+            # when buffered.
+            proc = subprocess.Popen(
+                [
+                    "git",
+                    "log",
+                    "--format=%H|%an|%ae|%aI",
+                    "--name-only",
+                    "-n",
+                    str(commit_limit),
+                ],
                 cwd=self.project_root,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
-                timeout=60,
+                bufsize=1,
             )
+            assert proc.stdout is not None
 
-            if result.returncode != 0:
-                logger.warning("git log failed")
-                return
+            current_commit: str | None = None
+            current_email: str | None = None
+            current_time: str | None = None
 
-            current_commit = None
-            current_email = None
-            current_time = None
-
-            for line in result.stdout.split("\n"):
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip("\n")
                 if "|" in line and line.count("|") == 3:
                     # Commit line: sha|name|email|time
                     parts = line.split("|")
                     current_commit = parts[0]
-                    _ = parts[1]  # author name (unused, we use email)
                     current_email = parts[2]
                     current_time = parts[3]
                 elif line.strip() and current_email:
-                    # File line - collect ALL authors, not just first
                     file_path = line.strip()
+                    # Only retain history for files we actually have entities
+                    # for — drops a huge slice of irrelevant filenames in
+                    # large repos.
+                    if file_path not in file_to_entities:
+                        continue
                     email_hash = self._hash_email(current_email)
                     person_id = f"person:{email_hash}"
 
-                    if file_path not in file_authors_map:
-                        file_authors_map[file_path] = []
+                    bucket = file_authors_map.get(file_path)
+                    if bucket is None:
+                        bucket = []
+                        file_authors_map[file_path] = bucket
+                    bucket.append((person_id, current_time or "", current_commit or ""))
 
-                    # Add author to list (most recent commits first from git log)
-                    file_authors_map[file_path].append(
-                        (person_id, current_time or "", current_commit or "")
-                    )
-
-        except subprocess.TimeoutExpired:
-            logger.warning("git log timed out")
+            try:
+                proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                logger.warning(
+                    "git log (authorship) timed out, partial results retained"
+                )
+        except FileNotFoundError:
+            logger.debug("Git not found, skipping authorship extraction")
             return
         except Exception as e:
             logger.warning(f"git log failed: {e}")
             return
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+            if proc is not None and proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except Exception:  # nosec - best-effort cleanup
+                    pass
 
-        # Create AUTHORED and MODIFIED relationships
+        # Build edge list and flush in bounded batches.
+        authored_count = 0
+        modified_count = 0
+        pending: list[tuple[str, str, str, str, str, int]] = []
+
+        def _flush() -> None:
+            nonlocal authored_count, modified_count, pending
+            if not pending:
+                return
+            inserted = self.kg.add_authored_modified_batch_sync(
+                pending, batch_size=batch_size
+            )
+            # Tally per-type from the buffered records (inserted is the total
+            # successfully written; on partial failure we err on the optimistic
+            # side, matching the legacy per-edge behavior).
+            type_counts = {"AUTHORED": 0, "MODIFIED": 0}
+            for rec in pending:
+                if rec[0] in type_counts:
+                    type_counts[rec[0]] += 1
+            # Scale tally to the actual insert count so stats stay coherent
+            # when a batch is rejected.
+            total_attempted = sum(type_counts.values())
+            if total_attempted > 0 and inserted < total_attempted:
+                ratio = inserted / total_attempted
+                type_counts["AUTHORED"] = int(type_counts["AUTHORED"] * ratio)
+                type_counts["MODIFIED"] = int(type_counts["MODIFIED"] * ratio)
+            authored_count += type_counts["AUTHORED"]
+            modified_count += type_counts["MODIFIED"]
+            pending.clear()
+            # Force CPython to release the per-batch tuples before the next
+            # window of work — critical on huge codebases where each batch
+            # would otherwise sit on the heap until GC's threshold trips.
+            gc.collect()
+
         for file_path, entity_ids in file_to_entities.items():
-            if file_path not in file_authors_map:
-                continue
-
-            authors = file_authors_map[file_path]
+            authors = file_authors_map.get(file_path)
             if not authors:
                 continue
 
             # Sort authors chronologically (oldest first)
-            # git log gives us most recent first, so reverse to get oldest first
-            authors_sorted = sorted(authors, key=lambda x: x[1])  # Sort by timestamp
+            authors_sorted = sorted(authors, key=lambda x: x[1])
 
-            # Get unique authors (person may have multiple commits)
+            # Deduplicate authors per file (a person may have multiple commits)
             seen_persons: set[str] = set()
             unique_authors: list[tuple[str, str, str]] = []
             for author in authors_sorted:
-                person_id = author[0]
-                if person_id not in seen_persons:
-                    seen_persons.add(person_id)
+                pid = author[0]
+                if pid not in seen_persons:
+                    seen_persons.add(pid)
                     unique_authors.append(author)
 
             if not unique_authors:
                 continue
 
-            # First author (oldest) gets AUTHORED relationship
-            first_author = unique_authors[0]
-            person_id, timestamp, commit_sha = first_author
+            # First (oldest) author -> AUTHORED, rest -> MODIFIED.  Cap at 5
+            # entities per file to bound the worst-case fan-out.
+            limited_entity_ids = entity_ids[:5]
 
-            if person_id in persons:
-                for entity_id in entity_ids[:5]:  # Limit per file
-                    self.kg.add_authored_relationship_sync(
-                        person_id, entity_id, timestamp, commit_sha, 0
-                    )
-                    authored_count += 1
+            first_pid, first_ts, first_sha = unique_authors[0]
+            if first_pid in persons:
+                for eid in limited_entity_ids:
+                    pending.append(("AUTHORED", first_pid, eid, first_ts, first_sha, 0))
+                    if len(pending) >= batch_size:
+                        _flush()
 
-            # Subsequent authors get MODIFIED relationships
-            for author in unique_authors[1:]:
-                person_id, timestamp, commit_sha = author
+            for pid, ts, sha in unique_authors[1:]:
+                if pid not in persons:
+                    continue
+                for eid in limited_entity_ids:
+                    pending.append(("MODIFIED", pid, eid, ts, sha, 0))
+                    if len(pending) >= batch_size:
+                        _flush()
 
-                if person_id in persons:
-                    for entity_id in entity_ids[:5]:  # Limit per file
-                        self.kg.add_modified_relationship_sync(
-                            person_id, entity_id, timestamp, commit_sha, 0
-                        )
-                        modified_count += 1
+        # Flush any trailing edges and free the working maps.
+        _flush()
+        file_authors_map.clear()
+        file_to_entities.clear()
+        gc.collect()
 
         stats["authored"] = authored_count
         stats["modified"] = modified_count

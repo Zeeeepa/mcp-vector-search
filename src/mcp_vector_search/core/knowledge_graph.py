@@ -2447,6 +2447,92 @@ class KnowledgeGraph:
         except Exception as e:
             logger.debug(f"Failed to add MODIFIED relationship: {e}")
 
+    def add_authored_modified_batch_sync(
+        self,
+        records: list[tuple[str, str, str, str, str, int]],
+        batch_size: int = 500,
+    ) -> int:
+        """Batch insert AUTHORED/MODIFIED relationships using UNWIND (synchronous).
+
+        Each record is a tuple of
+        ``(rel_type, person_id, entity_id, timestamp, commit_sha, lines)``
+        where ``rel_type`` is either ``"AUTHORED"`` or ``"MODIFIED"``.
+
+        Records are grouped by ``rel_type`` and inserted in batches of
+        ``batch_size``.  This replaces N individual MATCH/CREATE round-trips
+        with N/batch_size UNWIND queries — the original per-edge path was the
+        primary contributor to runaway memory during git-metadata extraction
+        on large repos.
+
+        Args:
+            records: List of ``(rel_type, person_id, entity_id, timestamp,
+                commit_sha, lines)`` tuples.
+            batch_size: Number of edges per UNWIND batch (default 500).
+
+        Returns:
+            Total number of relationships inserted.
+        """
+        if not self._initialized:
+            raise RuntimeError(
+                "KnowledgeGraph not initialized. Call initialize_sync() first."
+            )
+
+        # Bucket by relationship type so we can issue typed UNWIND queries.
+        buckets: dict[str, list[tuple[str, str, str, str, int]]] = {
+            "AUTHORED": [],
+            "MODIFIED": [],
+        }
+        for rec in records:
+            rel_type, person_id, entity_id, ts, sha, lines = rec
+            if rel_type not in buckets:
+                logger.debug(
+                    "Skipping unknown rel_type in authored batch: %s", rel_type
+                )
+                continue
+            buckets[rel_type].append((person_id, entity_id, ts, sha, lines))
+
+        total = 0
+        for rel_type, items in buckets.items():
+            if not items:
+                continue
+            # Field name on AUTHORED is lines_authored; on MODIFIED it's lines_changed.
+            lines_field = (
+                "lines_authored" if rel_type == "AUTHORED" else "lines_changed"
+            )
+            for i in range(0, len(items), batch_size):
+                batch = items[i : i + batch_size]
+                params = [
+                    {
+                        "person_id": pid,
+                        "entity_id": eid,
+                        "timestamp": ts,
+                        "commit_sha": sha,
+                        "lines": lines,
+                    }
+                    for (pid, eid, ts, sha, lines) in batch
+                ]
+                query = f"""
+                    UNWIND $batch AS r
+                    MATCH (p:Person {{id: r.person_id}}),
+                          (e:CodeEntity {{id: r.entity_id}})
+                    CREATE (p)-[rel:{rel_type}]->(e)
+                    SET rel.timestamp = r.timestamp,
+                        rel.commit_sha = r.commit_sha,
+                        rel.{lines_field} = r.lines
+                """
+                try:
+                    self._execute_query(query, {"batch": params})
+                    total += len(batch)
+                except Exception as e:
+                    logger.debug(
+                        "Failed to insert %s batch (size=%d): %s",
+                        rel_type,
+                        len(batch),
+                        e,
+                    )
+
+        return total
+
     def add_part_of_batch_sync(
         self, entity_ids: list[str], project_id: str, batch_size: int = 500
     ) -> int:

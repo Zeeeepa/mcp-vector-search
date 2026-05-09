@@ -131,6 +131,18 @@ def main():
         if args.verbose:
             console.print(f"[green]✓ Loaded {len(chunks)} chunks[/green]")
 
+        # Memory guard: warn loudly when a large KG build is starting on a
+        # host that may not have enough RAM.  The full guard logic lives in
+        # kg_builder._check_kg_memory_guard; we approximate file_count here
+        # from chunks so we can warn before any KG work begins.
+        try:
+            from mcp_vector_search.core.kg_builder import _check_kg_memory_guard
+
+            file_count = len({str(c.file_path) for c in chunks if c.file_path})
+            _check_kg_memory_guard(file_count, console)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Pre-build memory guard check failed: %s", e)
+
         if len(chunks) == 0:
             console.print(
                 "[red]✗[/red] No chunks found. Run 'mcp-vector-search index' first."
