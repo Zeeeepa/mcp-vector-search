@@ -558,7 +558,7 @@ class IndexPipeline:
                                     contents,
                                 )
                             elif hasattr(self.database, "_collection") and hasattr(
-                                self.database._collection,
+                                self.database._collection,  # type: ignore[attr-defined]
                                 "_embedding_function",  # type: ignore[union-attr]
                             ):
                                 vectors = await asyncio.to_thread(
