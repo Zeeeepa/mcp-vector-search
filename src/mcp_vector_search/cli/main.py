@@ -204,6 +204,7 @@ from .commands.audit import audit_app  # noqa: E402
 from .commands.chat import chat_app  # noqa: E402
 from .commands.chat_local import chat_local_app  # noqa: E402
 from .commands.config import config_app  # noqa: E402
+from .commands.daemon import app as daemon_app  # noqa: E402
 from .commands.demo import demo_app  # noqa: E402
 from .commands.embed import embed_app  # noqa: E402
 from .commands.index_cmd import index_cmd_app  # noqa: E402 - new unified index command
@@ -308,6 +309,9 @@ app.add_typer(profile_app, name="profile", help="📊 Profile codebase character
 
 # 9. MCP - MCP server operations (RESERVED for server ops only!)
 app.add_typer(mcp_app, name="mcp", help="🔌 MCP server operations")
+
+# 9.5. DAEMON - Persistent search daemon
+app.add_typer(daemon_app, name="daemon", help="⚡ Persistent search daemon")
 
 # 10. CONFIG - Configuration
 app.add_typer(config_app, name="config", help="⚙️  Manage project configuration")

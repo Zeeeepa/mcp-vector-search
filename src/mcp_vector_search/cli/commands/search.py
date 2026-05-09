@@ -248,6 +248,12 @@ def search_main(
         help="Restrict results to test files only (test_*.py, *_test.py, tests/, *.spec.ts, etc.)",
         rich_help_panel="🎯 Search Options",
     ),
+    no_daemon: bool = typer.Option(
+        False,
+        "--no-daemon",
+        help="Bypass the daemon and run search in-process (slower)",
+        rich_help_panel="🎯 Search Options",
+    ),
 ) -> None:
     """🔍 Search your codebase semantically.
 
@@ -364,7 +370,20 @@ def search_main(
                 )
             )
         else:
-            # Default semantic search
+            # Try persistent daemon first (unless explicitly disabled)
+            if not no_daemon and not os.environ.get("MVS_NO_DAEMON"):
+                if _try_daemon_search(
+                    project_root=resolved_root,
+                    query=query,
+                    limit=limit,
+                    search_mode=search_mode,
+                    show_content=not no_content,
+                    json_output=json_output,
+                    quality_weight=quality_weight,
+                ):
+                    return
+
+            # Default semantic search (subprocess / in-process fallback)
             asyncio.run(
                 run_search(
                     project_root=resolved_root,
@@ -401,6 +420,75 @@ def search_main(
         logger.error(f"Search failed: {e}")
         print_error(f"Search failed: {e}")
         raise typer.Exit(1)
+
+
+def _try_daemon_search(
+    project_root: Path,
+    query: str,
+    limit: int,
+    search_mode: str,
+    show_content: bool,
+    json_output: bool,
+    quality_weight: float,
+) -> bool:
+    """Attempt a search via the daemon. Returns True on success (results rendered)."""
+    from ...core.models import SearchResult
+    from ...daemon.client import DaemonClient
+    from ..output import console
+
+    async def _run() -> "tuple[bool, str | None, list[SearchResult] | None]":
+        client = DaemonClient()
+        if not client.is_running():
+            return False, None, None
+        resp = await client.search(
+            project_path=str(project_root),
+            query=query,
+            limit=limit,
+            mode=search_mode,
+        )
+        if resp is None:
+            return False, None, None
+        if resp.error:
+            return True, resp.error, None
+        results: list[SearchResult] = []
+        for item in resp.results:
+            try:
+                results.append(SearchResult.model_validate(item))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(f"Failed to deserialize daemon result: {exc}")
+        return True, None, results
+
+    try:
+        connected, error, results = asyncio.run(_run())
+    except Exception as exc:
+        logger.debug(f"Daemon search attempt raised: {exc}")
+        return False
+
+    if not connected:
+        console.print("[dim]Tip: Run 'mvs daemon start' for 150x faster search.[/dim]")
+        return False
+
+    if error:
+        console.print(f"[red]Daemon error: {error}[/red]")
+        return False
+
+    if results is None:
+        return False
+    if json_output:
+        from ..output import print_json
+
+        print_json([r.to_dict() for r in results])
+    else:
+        # Daemon path does not currently apply quality-aware ranking, so we
+        # pass quality_weight=0.0 to avoid the combined-score display branch
+        # that expects ``_original_similarity`` to be set.
+        print_search_results(
+            results=results,
+            query=query,
+            show_content=show_content,
+            quality_weight=0.0,
+        )
+    return True
 
 
 def _parse_grade_filter(grade_str: str) -> set[str]:
