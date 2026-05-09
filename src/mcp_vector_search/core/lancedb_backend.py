@@ -767,6 +767,97 @@ class LanceVectorDatabase:
             refine_factor = 5
         return nprobes, refine_factor
 
+    @staticmethod
+    def _build_where_clause(
+        filters: dict[str, Any] | None,
+        where_extra: str | None = None,
+    ) -> str | None:
+        """Build a LanceDB-compatible SQL WHERE clause.
+
+        Combines simple key/value (or IN) filters with an optional raw SQL
+        fragment.  All clauses are AND'ed together.
+
+        Args:
+            filters: Optional metadata filters. Supported value types:
+                - str   -> ``key = 'value'``
+                - list  -> ``key IN ('v1', 'v2', ...)``
+                - other -> ``key = value`` (numeric / bool fall-through)
+                ``None`` values are skipped.
+            where_extra: Optional raw SQL WHERE fragment appended verbatim
+                (e.g. ``file_path LIKE '%/tests/%'``).
+
+        Returns:
+            A SQL WHERE fragment suitable for ``LanceQuery.where(...)``,
+            or ``None`` when no clauses are produced.
+        """
+        filter_clauses: list[str] = []
+
+        if filters:
+            for key, value in filters.items():
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    filter_clauses.append(f"{key} = '{value}'")
+                elif isinstance(value, list):
+                    values_str = ", ".join(f"'{v}'" for v in value)
+                    filter_clauses.append(f"{key} IN ({values_str})")
+                else:
+                    filter_clauses.append(f"{key} = {value}")
+
+        if where_extra:
+            filter_clauses.append(where_extra)
+
+        if not filter_clauses:
+            return None
+        return " AND ".join(filter_clauses)
+
+    @staticmethod
+    def _results_to_search_results(
+        results: list[dict[str, Any]],
+        similarity_threshold: float,
+    ) -> list[SearchResult]:
+        """Convert raw LanceDB result rows into ``SearchResult`` objects.
+
+        LanceDB returns a ``_distance`` field (cosine distance, 0–2 range) that
+        we convert to similarity (1.0 = identical, 0.0 = opposite). Rows below
+        ``similarity_threshold`` are filtered out.
+
+        Args:
+            results: Raw LanceDB result dicts (one per matched row).
+            similarity_threshold: Minimum similarity (0.0–1.0) to include.
+
+        Returns:
+            List of populated ``SearchResult`` objects with rank assigned.
+        """
+        search_results: list[SearchResult] = []
+        for rank, result in enumerate(results):
+            distance = result.get("_distance", 0.0)
+            similarity = max(0.0, 1.0 - (distance / 2.0))
+
+            if similarity < similarity_threshold:
+                continue
+
+            search_results.append(
+                SearchResult(
+                    content=result["content"],
+                    file_path=Path(result["file_path"]),
+                    start_line=result["start_line"],
+                    end_line=result["end_line"],
+                    language=result["language"],
+                    similarity_score=similarity,
+                    rank=rank + 1,
+                    chunk_type=result.get("chunk_type", "code"),
+                    function_name=result.get("function_name") or None,
+                    class_name=result.get("class_name") or None,
+                    last_author=result.get("last_author") or None,
+                    last_modified=result.get("last_modified") or None,
+                    commit_hash=result.get("commit_hash") or None,
+                    subproject_name=result.get("subproject_name") or None,
+                    chunk_id=result.get("chunk_id") or None,
+                )
+            )
+        return search_results
+
     async def search(
         self,
         query: str,
