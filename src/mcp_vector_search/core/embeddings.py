@@ -107,6 +107,42 @@ from .exceptions import EmbeddingError
 _pytorch_warning_shown = False
 
 
+def _resolve_embedding_backend() -> str:
+    """Resolve the embedding backend to use.
+
+    Priority:
+    1. MCP_VECTOR_SEARCH_BACKEND env var (explicit override)
+    2. Auto-detect: ONNX on CPU-only, PyTorch on MPS/CUDA
+    """
+    explicit = os.environ.get("MCP_VECTOR_SEARCH_BACKEND", "").strip().lower()
+    if explicit in ("onnx", "pytorch"):
+        return explicit
+
+    # Auto-detect: prefer ONNX when no GPU is available
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "pytorch"  # Keep CUDA GPU acceleration
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "pytorch"  # Keep Apple Silicon MPS acceleration
+    except ImportError:
+        pass
+
+    # No GPU detected → ONNX is faster on CPU
+    import importlib.util
+
+    if importlib.util.find_spec("optimum") is not None:
+        return "onnx"
+
+    # optimum not installed → fall back to PyTorch gracefully
+    logger.debug(
+        "ONNX backend not available (optimum not installed). "
+        "Using PyTorch. Install with: pip install mcp-vector-search[onnx]"
+    )
+    return "pytorch"
+
+
 def _detect_device() -> str:
     """Detect optimal compute device (MPS > CUDA > CPU).
 
@@ -491,11 +527,14 @@ class CodeBERTEmbeddingFunction:
                         f"This may take a few minutes."
                     )
 
-                # Backend selection: opt-in ONNX runtime via env var
-                # Default ("pytorch") preserves existing behavior unchanged.
-                _backend = os.environ.get(
-                    "MCP_VECTOR_SEARCH_BACKEND", "pytorch"
-                ).lower()
+                # Backend selection: auto-detect ONNX vs PyTorch.
+                # - Explicit MCP_VECTOR_SEARCH_BACKEND env var overrides everything
+                # - CPU-only machines auto-select ONNX (faster inference)
+                # - MPS/CUDA machines auto-select PyTorch (keeps GPU acceleration)
+                _explicit_backend = (
+                    os.environ.get("MCP_VECTOR_SEARCH_BACKEND", "").strip().lower()
+                )
+                _backend = _resolve_embedding_backend()
 
                 if _backend == "onnx":
                     # ONNX runtime for faster CPU embedding inference.
@@ -504,7 +543,15 @@ class CodeBERTEmbeddingFunction:
                     # - ONNX backend is CPU-only on macOS (no MPS/CUDA support)
                     # - First run downloads/converts the model into ~/.cache/huggingface
                     device = "cpu"
-                    logger.info("Using ONNX runtime for embeddings (CPU only)")
+                    if _explicit_backend == "onnx":
+                        logger.info(
+                            "Using ONNX runtime for embeddings "
+                            "(set via MCP_VECTOR_SEARCH_BACKEND=onnx)"
+                        )
+                    else:
+                        logger.info(
+                            "Auto-selected ONNX runtime for embeddings (CPU-only mode)"
+                        )
                     try:
                         with suppress_stdout_stderr():
                             self.model = SentenceTransformer(
