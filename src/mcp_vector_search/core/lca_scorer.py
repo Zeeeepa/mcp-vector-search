@@ -25,7 +25,7 @@ Typical scores on a four-level (root/module/file/class/method) hierarchy:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import networkx as nx
 from loguru import logger
@@ -300,7 +300,7 @@ def build_lca_scorer_from_kuzu(
         edge_count = 0
         if result is not None:
             while result.has_next():
-                row = result.get_next()
+                row = cast(list[Any], result.get_next())
                 parent_id, child_id = row[0], row[1]
                 if parent_id is None or child_id is None:
                     continue
