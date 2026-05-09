@@ -13,6 +13,7 @@ Enables architectural queries like:
 """
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -573,11 +574,15 @@ class KnowledgeGraph:
             logger.debug(f"LINKS_TO table creation: {e}")
 
         # Create CONTAINS_SECTION relationship table (Document → DocSection)
+        # Includes weight/commit_sha so SET rel.weight / rel.commit_sha succeeds
+        # in batch insert paths (previously these were silently dropping ~377 edges).
         try:
             self._execute_query(
                 """
                 CREATE REL TABLE IF NOT EXISTS CONTAINS_SECTION (
                     FROM Document TO DocSection,
+                    weight DOUBLE DEFAULT 1.0,
+                    commit_sha STRING DEFAULT '',
                     MANY_MANY
                 )
             """
@@ -586,6 +591,28 @@ class KnowledgeGraph:
         except Exception as e:
             logger.debug(f"CONTAINS_SECTION table creation: {e}")
 
+        # Additive migration for pre-existing CONTAINS_SECTION tables that lack
+        # weight/commit_sha. Kuzu supports ALTER TABLE ADD on REL tables; if it
+        # fails (older Kuzu, table absent, or column already exists) we swallow
+        # the error — fresh DBs are already correct via CREATE above.
+        for col_name, col_def in (
+            ("weight", "DOUBLE DEFAULT 1.0"),
+            ("commit_sha", "STRING DEFAULT ''"),
+        ):
+            try:
+                self._execute_query(
+                    f"ALTER TABLE CONTAINS_SECTION ADD {col_name} {col_def}"
+                )
+                logger.warning(
+                    f"Migrated CONTAINS_SECTION: added {col_name} column. "
+                    "If you observed missing CONTAINS_SECTION edges previously, "
+                    "run `mvs kg rebuild` to backfill them."
+                )
+            except Exception:
+                # Column already exists OR Kuzu rejected the ALTER — expected
+                # for fresh/already-migrated DBs.
+                pass
+
         # Create RELATED_TO relationship table (Document → Document cross-references)
         try:
             self._execute_query(
@@ -593,6 +620,8 @@ class KnowledgeGraph:
                 CREATE REL TABLE IF NOT EXISTS RELATED_TO (
                     FROM Document TO Document,
                     link_text STRING,
+                    weight DOUBLE DEFAULT 1.0,
+                    commit_sha STRING DEFAULT '',
                     MANY_MANY
                 )
             """
@@ -600,6 +629,22 @@ class KnowledgeGraph:
             logger.debug("Created RELATED_TO relationship table")
         except Exception as e:
             logger.debug(f"RELATED_TO table creation: {e}")
+
+        # Additive migration for pre-existing RELATED_TO tables that lack
+        # weight/commit_sha (same rationale as CONTAINS_SECTION above).
+        for col_name, col_def in (
+            ("weight", "DOUBLE DEFAULT 1.0"),
+            ("commit_sha", "STRING DEFAULT ''"),
+        ):
+            try:
+                self._execute_query(f"ALTER TABLE RELATED_TO ADD {col_name} {col_def}")
+                logger.warning(
+                    f"Migrated RELATED_TO: added {col_name} column. "
+                    "If you observed missing RELATED_TO edges previously, "
+                    "run `mvs kg rebuild` to backfill them."
+                )
+            except Exception:
+                pass
 
         # Create DESCRIBES relationship table (Document → CodeEntity)
         try:
@@ -2256,7 +2301,18 @@ class KnowledgeGraph:
                     progress_callback(total, len(relationships))
             except Exception as e:
                 error_msg = str(e)
-                logger.debug(f"Batch insert failed for {rel_type}: {error_msg}")
+                # Schema-mismatch failures on doc-graph rel types previously silently
+                # dropped ~377 edges (CONTAINS_SECTION / RELATED_TO missing weight/
+                # commit_sha columns). Surface those at WARNING so future schema
+                # drift is visible. Other rel types stay at DEBUG to avoid noise.
+                if rel_type in ("CONTAINS_SECTION", "RELATED_TO"):
+                    logger.warning(
+                        f"Batch insert failed for {rel_type} "
+                        f"(possible schema mismatch — run `mvs kg rebuild` if persistent): "
+                        f"{error_msg}"
+                    )
+                else:
+                    logger.debug(f"Batch insert failed for {rel_type}: {error_msg}")
 
                 # CRITICAL: If Kuzu assertion failure detected, STOP immediately
                 # Continuing after assertion failure causes database corruption and crash
@@ -2555,7 +2611,19 @@ class KnowledgeGraph:
             )
 
         total = 0
-        for i in range(0, len(entity_ids), batch_size):
+        total_count = len(entity_ids)
+        # Heartbeat configuration (mirror of async variant) — surfaces progress
+        # during multi-minute PART_OF inserts on large projects.
+        heartbeat_entities = 10_000
+        heartbeat_seconds = 30.0
+        if total_count:
+            logger.info(
+                f"Creating PART_OF relationships for {total_count:,} entities..."
+            )
+        last_log_count = 0
+        last_log_time = time.monotonic()
+
+        for i in range(0, total_count, batch_size):
             batch = entity_ids[i : i + batch_size]
 
             try:
@@ -2571,6 +2639,17 @@ class KnowledgeGraph:
             except Exception as e:
                 logger.error(f"Failed to create PART_OF relationships batch: {e}")
                 raise
+
+            # Heartbeat
+            now = time.monotonic()
+            if (
+                total - last_log_count >= heartbeat_entities
+                or now - last_log_time >= heartbeat_seconds
+            ):
+                pct = (total / total_count * 100.0) if total_count else 100.0
+                logger.info(f"  PART_OF: {total:,}/{total_count:,} ({pct:.0f}%)")
+                last_log_count = total
+                last_log_time = now
 
         return total
 
@@ -2895,7 +2974,20 @@ class KnowledgeGraph:
             await self.initialize()
 
         total = 0
-        for i in range(0, len(entity_ids), batch_size):
+        total_count = len(entity_ids)
+        # Heartbeat: emit progress every heartbeat_entities rows or every
+        # heartbeat_seconds, whichever comes first. Fixes 11-min silent gap
+        # on large projects (100k+ entities).
+        heartbeat_entities = 10_000
+        heartbeat_seconds = 30.0
+        if total_count:
+            logger.info(
+                f"Creating PART_OF relationships for {total_count:,} entities..."
+            )
+        last_log_count = 0
+        last_log_time = time.monotonic()
+
+        for i in range(0, total_count, batch_size):
             batch = entity_ids[i : i + batch_size]
 
             try:
@@ -2918,6 +3010,17 @@ class KnowledgeGraph:
                         total += 1
                     except Exception:
                         pass
+
+            # Heartbeat
+            now = time.monotonic()
+            if (
+                total - last_log_count >= heartbeat_entities
+                or now - last_log_time >= heartbeat_seconds
+            ):
+                pct = (total / total_count * 100.0) if total_count else 100.0
+                logger.info(f"  PART_OF: {total:,}/{total_count:,} ({pct:.0f}%)")
+                last_log_count = total
+                last_log_time = now
 
         return total
 

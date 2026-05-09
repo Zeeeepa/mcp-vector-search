@@ -5148,9 +5148,10 @@ class KGBuilder:
             if entity_files:
                 await self._extract_authorship_fast(entity_files, persons, stats)
 
-            # Add PART_OF relationships for all code entities (batch)
+            # Add PART_OF relationships for all code entities (batch).
+            # add_part_of_batch logs the entity count and emits heartbeats; no
+            # need for a redundant "Creating PART_OF relationships..." line here.
             if project:
-                logger.info("Creating PART_OF relationships...")
                 try:
                     result = self.kg._conn.execute("MATCH (e:CodeEntity) RETURN e.id")
                     assert not isinstance(result, list)

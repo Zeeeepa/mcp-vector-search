@@ -1071,21 +1071,35 @@ class VectorsBackend:
             return None
 
         try:
-            df = self._table.to_pandas().query(f"chunk_id == '{chunk_id}'")
+            # Fix 3: filtered scanner avoids loading the entire table (and every
+            # row's 768-float vector) just to find one chunk. The previous
+            # to_pandas() call caused 600MB+ allocations on 200K-row indexes.
+            escaped = chunk_id.replace(chr(39), chr(39) * 2)
+            try:
+                scanner = self._table.to_lance().scanner(
+                    filter=f"chunk_id = '{escaped}'",
+                    columns=["chunk_id", "vector"],
+                    limit=1,
+                )
+                tbl = scanner.to_table()
+                if tbl.num_rows == 0:
+                    return None
+                vector = tbl.column("vector")[0].as_py()
+            except Exception as scan_err:
+                logger.warning(
+                    "Filtered get_chunk_vector scanner failed, falling back: %s",
+                    scan_err,
+                )
+                df = self._table.to_pandas().query(f"chunk_id == '{chunk_id}'")
+                if df.empty:
+                    return None
+                vector = df.iloc[0]["vector"]
 
-            if df.empty:
-                return None
-
-            # Return first matching vector
-            # Vector might be a numpy array, pyarrow array, or list
-            vector = df.iloc[0]["vector"]
             if isinstance(vector, list):
                 return vector
-            # Convert numpy/pyarrow arrays to list
             try:
                 return vector.tolist()
             except AttributeError:
-                # If it's already iterable but not a list
                 return list(vector)
 
         except Exception as e:
@@ -1121,15 +1135,31 @@ class VectorsBackend:
                     f"'{cid.replace(chr(39), chr(39) * 2)}'" for cid in batch
                 )
 
-                # Query for this batch
-                df = self._table.to_pandas().query(f"chunk_id in [{id_list}]")
+                # Fix 3: filtered scanner with column projection — pulls only the
+                # batch's matching rows (chunk_id + vector) instead of scanning
+                # the full table per batch. Saves O(table_size * num_batches)
+                # memory churn on incremental embedding paths.
+                try:
+                    scanner = self._table.to_lance().scanner(
+                        filter=f"chunk_id IN ({id_list})",
+                        columns=["chunk_id", "vector"],
+                    )
+                    arrow_tbl = scanner.to_table()
+                    chunk_ids_col = arrow_tbl.column("chunk_id").to_pylist()
+                    vectors_col = arrow_tbl.column("vector").to_pylist()
+                    rows_iter = zip(chunk_ids_col, vectors_col, strict=False)
+                except Exception as scan_err:
+                    logger.warning(
+                        "Filtered batch vectors scanner failed, falling back: %s",
+                        scan_err,
+                    )
+                    df = self._table.to_pandas().query(f"chunk_id in [{id_list}]")
+                    rows_iter = (
+                        (row["chunk_id"], row["vector"]) for _, row in df.iterrows()
+                    )
 
                 # Extract vectors from results
-                for _, row in df.iterrows():
-                    chunk_id = row["chunk_id"]
-                    vector = row["vector"]
-
-                    # Convert to list if needed
+                for chunk_id, vector in rows_iter:
                     if isinstance(vector, list):
                         all_vectors[chunk_id] = vector
                     else:

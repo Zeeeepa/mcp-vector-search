@@ -1016,9 +1016,26 @@ class SemanticSearchEngine:
             # Try to read stored model from first vector in table
             if self._vectors_backend._table is not None:
                 try:
-                    # Get first row to check stored model_version
-                    df = self._vectors_backend._table.to_pandas().head(1)
-                    if not df.empty and "model_version" in df.columns:
+                    # Fix 3: column-projected scanner with limit=1 — previously
+                    # to_pandas() loaded ALL rows including 768-d vectors just
+                    # to read model_version + dim from the head row. Now we
+                    # pull a single row with only the columns we need.
+                    try:
+                        scanner = self._vectors_backend._table.to_lance().scanner(
+                            columns=["model_version", "vector"], limit=1
+                        )
+                        arrow_tbl = scanner.to_table()
+                        if arrow_tbl.num_rows == 0:
+                            df = None
+                        else:
+                            df = arrow_tbl.to_pandas()
+                    except Exception:
+                        df = self._vectors_backend._table.to_pandas().head(1)
+                    if (
+                        df is not None
+                        and not df.empty
+                        and "model_version" in df.columns
+                    ):
                         stored_model = df.iloc[0]["model_version"]
 
                         # Check for model name mismatch
@@ -1535,8 +1552,25 @@ class SemanticSearchEngine:
             db = lancedb.connect(str(lance_path))
             table = db.open_table("vectors")
 
-            # Query all records
-            df = table.to_pandas()
+            # Fix 3: column-projected scan — BM25 only needs text fields, not
+            # the 768-d vector column. Skipping it saves ~600 MB on a 200K-row
+            # table during lazy BM25 build.
+            bm25_columns = [
+                "chunk_id",
+                "content",
+                "name",
+                "file_path",
+                "chunk_type",
+            ]
+            try:
+                scanner = table.to_lance().scanner(columns=bm25_columns)
+                df = scanner.to_table().to_pandas()
+            except Exception as scan_err:
+                logger.warning(
+                    "Column-projected BM25 scan failed, falling back to full scan: %s",
+                    scan_err,
+                )
+                df = table.to_pandas()
 
             if df.empty:
                 logger.debug("Vectors table is empty, cannot build BM25 index")
@@ -1628,13 +1662,38 @@ class SemanticSearchEngine:
                 )
             vectors_table = self._vectors_backend._table
 
+            # Columns we actually consume below — explicit projection avoids
+            # loading the 768-d vector column on every per-chunk fetch.
+            _meta_cols = [
+                "chunk_id",
+                "content",
+                "file_path",
+                "start_line",
+                "end_line",
+                "language",
+                "chunk_type",
+                "name",
+            ]
             for chunk_id, bm25_score in bm25_results:
                 if len(search_results) >= limit:
                     break
                 # Query vectors table for chunk metadata
                 try:
-                    # Use chunk_id to fetch metadata
-                    df = vectors_table.to_pandas().query(f"chunk_id == '{chunk_id}'")
+                    # Fix 3: filtered scanner — was scanning the entire table
+                    # (with vectors) per BM25 hit, causing N×table_size memory
+                    # churn on hybrid search.
+                    escaped = chunk_id.replace(chr(39), chr(39) * 2)
+                    try:
+                        scanner = vectors_table.to_lance().scanner(
+                            filter=f"chunk_id = '{escaped}'",
+                            columns=_meta_cols,
+                            limit=1,
+                        )
+                        df = scanner.to_table().to_pandas()
+                    except Exception:
+                        df = vectors_table.to_pandas().query(
+                            f"chunk_id == '{chunk_id}'"
+                        )
                     if df.empty:
                         continue
 
@@ -1761,7 +1820,16 @@ class SemanticSearchEngine:
                     if _tbl is None:
                         raise ValueError("vectors table not initialised")
                     chunk_ids_in_play = [cid for cid, _ in bm25_results]
-                    df = _tbl.to_pandas()
+                    # Fix 3: column projection — only chunk_id + file_path are
+                    # needed for the tests_only filter; the previous full scan
+                    # pulled every row's 768-d vector into memory.
+                    try:
+                        scanner = _tbl.to_lance().scanner(
+                            columns=["chunk_id", "file_path"]
+                        )
+                        df = scanner.to_table().to_pandas()
+                    except Exception:
+                        df = _tbl.to_pandas()
                     df_subset = df[df["chunk_id"].isin(chunk_ids_in_play)]
                     test_chunk_ids = {
                         str(row["chunk_id"])
@@ -1896,9 +1964,33 @@ class SemanticSearchEngine:
                     # Fetch metadata from vectors backend
                     try:
                         if self._vectors_backend and self._vectors_backend._table:
-                            df = self._vectors_backend._table.to_pandas().query(
-                                f"chunk_id == '{chunk_id}'"
-                            )
+                            # Fix 3: filtered scanner with column projection —
+                            # was scanning the entire vectors table (including
+                            # 768-d vectors) for every BM25-only chunk_id
+                            # during hybrid RRF merge.
+                            _tbl_inner = self._vectors_backend._table
+                            _escaped = chunk_id.replace(chr(39), chr(39) * 2)
+                            _meta_cols_inner = [
+                                "chunk_id",
+                                "content",
+                                "file_path",
+                                "start_line",
+                                "end_line",
+                                "language",
+                                "chunk_type",
+                                "name",
+                            ]
+                            try:
+                                scanner = _tbl_inner.to_lance().scanner(
+                                    filter=f"chunk_id = '{_escaped}'",
+                                    columns=_meta_cols_inner,
+                                    limit=1,
+                                )
+                                df = scanner.to_table().to_pandas()
+                            except Exception:
+                                df = _tbl_inner.to_pandas().query(
+                                    f"chunk_id == '{chunk_id}'"
+                                )
                             if not df.empty:
                                 row = df.iloc[0]
                                 search_result = SearchResult(
