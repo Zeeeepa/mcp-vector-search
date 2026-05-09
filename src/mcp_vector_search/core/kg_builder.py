@@ -568,6 +568,13 @@ class KGBuilder:
 
         start_time = time.time()
 
+        # NOTE: subprocess/sync path always skips DOCUMENTS extraction (see
+        # comment further down).  ``skip_documents`` is kept for API parity
+        # with the async ``build_from_chunks`` and is logged here so the
+        # flag isn't a silent no-op when callers explicitly request it.
+        if skip_documents:
+            logger.debug("skip_documents=True (already implicit in sync path)")
+
         # Separate code and text chunks
         # Include all valid code chunk types from parsers:
         # - Python/JS/Java: function, method, class, module
@@ -941,7 +948,7 @@ class KGBuilder:
                 valid_rels = []
                 skipped = 0
 
-                for _i, rel in enumerate(rels, 1):
+                for rel in rels:
                     source_ok = rel.source_id in valid_entity_ids
                     target_ok = rel.target_id in valid_entity_ids
 
@@ -987,7 +994,6 @@ class KGBuilder:
 
                     def _make_progress_callback(
                         rtype: str,
-                        n_total: int,
                         start: float,
                         tracker: ProgressTracker | None,
                         con: Console,
@@ -1011,7 +1017,6 @@ class KGBuilder:
 
                     progress_cb = _make_progress_callback(
                         rel_type,
-                        len(valid_rels),
                         insert_start_time,
                         progress_tracker,
                         console,
@@ -3100,7 +3105,7 @@ class KGBuilder:
                 if len(parts) < 4:
                     continue
 
-                commit_sha, name, email, timestamp = parts[:4]
+                _, name, email, timestamp = parts[:4]
                 email_hash = self._hash_email(email)
                 person_id = f"person:{email_hash}"
 
@@ -3114,11 +3119,12 @@ class KGBuilder:
                         last_commit=timestamp,
                     )
                 else:
-                    persons[person_id].commits_count += 1
-                    if timestamp > persons[person_id].last_commit:
-                        persons[person_id].last_commit = timestamp
-                    if timestamp < persons[person_id].first_commit:
-                        persons[person_id].first_commit = timestamp
+                    p = persons[person_id]
+                    p.commits_count += 1
+                    if p.last_commit is None or timestamp > p.last_commit:
+                        p.last_commit = timestamp
+                    if p.first_commit is None or timestamp < p.first_commit:
+                        p.first_commit = timestamp
 
             # Add persons to KG
             for person in persons.values():
@@ -3239,7 +3245,7 @@ class KGBuilder:
                 if len(parts) < 4:
                     continue
 
-                _commit_sha, name, email, timestamp = parts[:4]
+                _, name, email, timestamp = parts[:4]
                 email_hash = self._hash_email(email)
                 person_id = f"person:{email_hash}"
 
@@ -3492,7 +3498,7 @@ class KGBuilder:
                     language_counts[lang] = language_counts.get(lang, 0) + 1
 
             # Create ProgrammingLanguage nodes
-            for lang_name, _count in language_counts.items():
+            for lang_name in language_counts:
                 lang_id = f"lang:{lang_name}"
                 extensions = self._get_extensions_for_language(lang_name)
 
@@ -5057,15 +5063,32 @@ class KGBuilder:
 
         logger.info(f"Loaded {len(chunks)} chunks for processing")
 
+        # Memory guard: warn (don't raise) when RAM looks insufficient.
+        distinct_files = len({c.file_path for c in chunks if c.file_path})
+        _check_kg_memory_guard(distinct_files, console)
+
         # Build graph from chunks
         stats = await self.build_from_chunks(
             chunks, show_progress=show_progress, skip_documents=skip_documents
         )
 
-        # Extract work entities from git (if available)
-        logger.info("Extracting work entities from git...")
-        persons = await self._extract_git_authors(stats)
-        project = await self._extract_project_info(stats)
+        # Extract work entities from git (if available).
+        # On large repos the git-log fan-out drives the 160GB blow-up, so the
+        # gate auto-disables it past MCP_VECTOR_SEARCH_KG_LARGE_REPO_THRESHOLD
+        # files (operators can force-enable via MCP_VECTOR_SEARCH_KG_GIT_METADATA=true).
+        if not _should_extract_git_metadata(distinct_files):
+            logger.warning(
+                "Skipping git metadata extraction "
+                "(file_count=%d, large-repo guard active). Set "
+                "MCP_VECTOR_SEARCH_KG_GIT_METADATA=true to force-enable.",
+                distinct_files,
+            )
+            persons: dict[str, Person] = {}
+            project = await self._extract_project_info(stats)
+        else:
+            logger.info("Extracting work entities from git...")
+            persons = await self._extract_git_authors(stats)
+            project = await self._extract_project_info(stats)
 
         # Extract programming languages and frameworks
         logger.info("Extracting programming languages and frameworks...")
@@ -5100,7 +5123,7 @@ class KGBuilder:
 
         # Extract git history (repository, branches, commits)
         logger.info("Extracting git history (repository, branches, commits)...")
-        repository, branches, commits = await self._extract_git_history(stats)
+        _, _, commits = await self._extract_git_history(stats)
 
         # Extract MODIFIES relationships (commits -> code entities)
         if commits:
