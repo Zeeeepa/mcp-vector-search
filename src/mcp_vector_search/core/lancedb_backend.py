@@ -17,7 +17,7 @@ import shutil
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import lancedb
 import numpy as np
@@ -251,10 +251,12 @@ class LanceVectorDatabase:
 
     def _list_table_names(self) -> list[str]:
         """Return table names from LanceDB, handling API variations."""
+        if self._db is None:
+            raise DatabaseNotInitializedError("Database not initialized")
         tables_response = self._db.list_tables()
         if hasattr(tables_response, "tables"):
-            return tables_response.tables
-        return tables_response
+            return cast("list[str]", list(tables_response.tables))
+        return cast("list[str]", list(tables_response))
 
     def _idempotent_create_table(
         self,
@@ -279,6 +281,8 @@ class LanceVectorDatabase:
         Returns:
             LanceDB table handle
         """
+        if self._db is None:
+            raise DatabaseNotInitializedError("Database not initialized")
         kwargs: dict[str, Any] = {}
         if schema is not None:
             kwargs["schema"] = schema
@@ -922,11 +926,26 @@ class LanceVectorDatabase:
             # Both are only valid when an ANN vector index exists on the table.
             # We detect index presence and apply them only when applicable,
             # with a try/except fallback for forward-compat with API changes.
-            search = self._table.search(query_embedding).metric("cosine").limit(limit)
+            # Note: .metric("cosine") is set on the underlying query builder; some
+            # lancedb stub versions don't expose it on LanceQueryBuilder. Use getattr
+            # to remain compatible while keeping cosine semantics (the table itself
+            # is created with cosine metric, so this is a no-op when missing).
+            search = self._table.search(query_embedding)
+            metric_fn = getattr(search, "metric", None)
+            if metric_fn is not None:
+                search = metric_fn("cosine")
+            search = search.limit(limit)
             if self._has_vector_index():
                 nprobes, refine_factor = self._get_ann_search_params()
                 try:
-                    search = search.nprobes(nprobes).refine_factor(refine_factor)
+                    # nprobes/refine_factor are only present on ANN query builders;
+                    # use getattr to stay compatible with lancedb stub variations.
+                    nprobes_fn = getattr(search, "nprobes", None)
+                    refine_fn = getattr(search, "refine_factor", None)
+                    if nprobes_fn is not None:
+                        search = nprobes_fn(nprobes)
+                    if refine_fn is not None:
+                        search = refine_fn(refine_factor)
                 except Exception as ann_err:
                     logger.debug(
                         f"Failed to apply nprobes/refine_factor (non-fatal, "
@@ -1040,10 +1059,13 @@ class LanceVectorDatabase:
             # Try to open the table if it exists
             try:
                 tables_response = self._db.list_tables()
-                table_names = (
-                    tables_response.tables
-                    if hasattr(tables_response, "tables")
-                    else tables_response
+                table_names: list[str] = cast(
+                    "list[str]",
+                    list(
+                        tables_response.tables
+                        if hasattr(tables_response, "tables")
+                        else tables_response
+                    ),
                 )
 
                 if self.collection_name in table_names:
@@ -1105,7 +1127,7 @@ class LanceVectorDatabase:
             df = self._table.to_pandas()
 
             # Count unique files
-            total_files = df["file_path"].nunique()
+            total_files = int(cast(int, df["file_path"].nunique()))
 
             # Language distribution
             language_counts = df["language"].value_counts().to_dict()
@@ -1196,7 +1218,7 @@ class LanceVectorDatabase:
             self._write_buffer = []
 
             # Drop table if exists
-            if self.collection_name in self._db.list_tables():
+            if self.collection_name in self._list_table_names():
                 self._db.drop_table(self.collection_name)
                 logger.info(f"Dropped LanceDB table '{self.collection_name}'")
 
@@ -1269,6 +1291,8 @@ class LanceVectorDatabase:
         language: str | None,
     ) -> Iterator[list[CodeChunk]]:
         """Optimal batch iteration using Lance scanner (requires pylance)."""
+        if self._table is None:
+            return
         # Build filter expression
         filter_expr = None
         if file_path:
@@ -1307,6 +1331,8 @@ class LanceVectorDatabase:
         language: str | None,
     ) -> Iterator[list[CodeChunk]]:
         """Fallback batch iteration using chunked Pandas DataFrames."""
+        if self._table is None:
+            return
         # Load table to Pandas (this is the memory-intensive step)
         df = self._table.to_pandas()
 
