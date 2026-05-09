@@ -45,10 +45,11 @@ def _ensure_cache(graph_file: Path) -> dict:
         return _graph_cache
 
     with open(graph_file, "rb") as f:
-        _graph_cache = orjson.loads(f.read())
+        loaded: dict = orjson.loads(f.read())
+    _graph_cache = loaded
 
     # Build O(1) lookup indexes
-    for node in _graph_cache.get("nodes", []):
+    for node in loaded.get("nodes", []):
         _nodes_by_id[node["id"]] = node
         parent = node.get("parent_id")
         if parent:
@@ -56,7 +57,7 @@ def _ensure_cache(graph_file: Path) -> dict:
 
     total = len(_nodes_by_id)
     console.print(f"[green]✓[/green] Graph cache loaded: {total} nodes indexed")
-    return _graph_cache
+    return loaded
 
 
 def find_free_port(start_port: int = 8501, end_port: int = 8599) -> int:
@@ -857,7 +858,7 @@ def create_app(viz_dir: Path) -> FastAPI:
             )
 
     @app.get("/api/graph-data")
-    async def stream_graph_data() -> StreamingResponse:
+    async def stream_graph_data() -> Response | StreamingResponse:
         """Stream chunk-graph.json in 100KB chunks (legacy endpoint).
 
         Returns:
