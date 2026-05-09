@@ -1352,7 +1352,7 @@ class LanceVectorDatabase:
             batch_df = df.iloc[offset : offset + batch_size]  # type: ignore[attr-defined]
 
             chunks = []
-            for _, row in batch_df.iterrows():
+            for _, row in batch_df.iterrows():  # type: ignore[attr-defined]
                 chunk = self._row_to_chunk(row)
                 chunks.append(chunk)
 
