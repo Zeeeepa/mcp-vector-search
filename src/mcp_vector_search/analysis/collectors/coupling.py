@@ -603,24 +603,24 @@ class EfferentCouplingCollector(MetricCollector):
             # Look for dotted_name or module_name field
             module_node = node.child_by_field_name("module_name")
             if module_node:
-                module_name = module_node.text.decode("utf-8")
+                module_name = (module_node.text or b"").decode("utf-8")
                 self._add_import(module_name, context)
             else:
                 # Look for dotted_name child
                 for child in node.children:
                     if child.type == "dotted_name":
-                        module_name = child.text.decode("utf-8")
+                        module_name = (child.text or b"").decode("utf-8")
                         self._add_import(module_name, context)
                     elif child.type == "aliased_import":
                         # import os as operating_system
                         for subchild in child.children:
                             if subchild.type == "dotted_name":
-                                module_name = subchild.text.decode("utf-8")
+                                module_name = (subchild.text or b"").decode("utf-8")
                                 self._add_import(module_name, context)
                                 break
                     elif child.type == "relative_import":
                         # Relative import (from . import X)
-                        dots = child.text.decode("utf-8")
+                        dots = (child.text or b"").decode("utf-8")
                         self._add_import(dots, context)
                         break
 
@@ -628,33 +628,33 @@ class EfferentCouplingCollector(MetricCollector):
             # JavaScript/TypeScript: import ... from 'module'
             for child in node.children:
                 if child.type == "string":
-                    module_str = child.text.decode("utf-8")
+                    module_str = (child.text or b"").decode("utf-8")
                     module_name = module_str.strip("\"'")
                     self._add_import(module_name, context)
 
         elif language == "java":
             for child in node.children:
                 if child.type == "scoped_identifier":
-                    module_name = child.text.decode("utf-8")
+                    module_name = (child.text or b"").decode("utf-8")
                     self._add_import(module_name, context)
 
         elif language == "rust":
             for child in node.children:
                 if child.type == "scoped_identifier":
-                    module_name = child.text.decode("utf-8")
+                    module_name = (child.text or b"").decode("utf-8")
                     self._add_import(module_name, context)
 
         elif language == "php":
             for child in node.children:
                 if child.type == "qualified_name":
-                    module_name = child.text.decode("utf-8")
+                    module_name = (child.text or b"").decode("utf-8")
                     self._add_import(module_name, context)
 
         elif language == "ruby":
             # Ruby uses method calls for imports
             if node.type == "call":
                 method_child = node.child_by_field_name("method")
-                if method_child and method_child.text.decode("utf-8") in [
+                if method_child and (method_child.text or b"").decode("utf-8") in [
                     "require",
                     "require_relative",
                 ]:
@@ -662,7 +662,7 @@ class EfferentCouplingCollector(MetricCollector):
                     if args_child:
                         for child in args_child.children:
                             if child.type == "string":
-                                module_str = child.text.decode("utf-8")
+                                module_str = (child.text or b"").decode("utf-8")
                                 module_name = module_str.strip("\"'")
                                 self._add_import(module_name, context)
 
@@ -679,13 +679,13 @@ class EfferentCouplingCollector(MetricCollector):
         # Check if this is a require() call
         function_node = node.child_by_field_name("function")
         if function_node and function_node.type == "identifier":
-            function_name = function_node.text.decode("utf-8")
+            function_name = (function_node.text or b"").decode("utf-8")
             if function_name == "require":
                 args_node = node.child_by_field_name("arguments")
                 if args_node:
                     for child in args_node.children:
                         if child.type == "string":
-                            module_str = child.text.decode("utf-8")
+                            module_str = (child.text or b"").decode("utf-8")
                             module_name = module_str.strip("\"'")
                             self._add_import(module_name, context)
 
