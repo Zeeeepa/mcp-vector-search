@@ -922,11 +922,20 @@ def build_import_graph(
             # Fallback: no tree-sitter support, return empty graph
             return import_graph
 
-        parser = Parser()
-        parser.set_language(language_obj)
+        # tree-sitter >= 0.22 removed Parser.set_language() in favor of
+        # passing the Language to the constructor. Try the new API first
+        # and fall back to the legacy API for older versions.
+        try:
+            parser = Parser(language_obj)
+        except TypeError:
+            parser = Parser()
+            parser.set_language(language_obj)  # type: ignore[attr-defined]
 
     except ImportError:
         # Tree-sitter not available, return empty graph
+        return import_graph
+    except Exception:
+        # Grammar / language object unavailable — degrade gracefully
         return import_graph
 
     # Create efferent coupling collector to extract imports
@@ -990,24 +999,47 @@ def _traverse_tree(
         _traverse_tree(child, context, collector)
 
 
-def _get_tree_sitter_language(language: str) -> Any:  # noqa: ARG001
+def _get_tree_sitter_language(language: str) -> Any:
     """Get tree-sitter Language object for the given language.
 
+    Resolves the language via ``tree_sitter_language_pack``. JSX/TSX files do
+    not ship with their own grammar in the language pack, so they are mapped
+    onto the JavaScript / TypeScript grammars respectively. If the requested
+    grammar is not installed, ``None`` is returned so callers can degrade
+    gracefully instead of crashing.
+
     Args:
-        language: Programming language identifier
+        language: Programming language identifier (e.g. ``"java"``, ``"jsx"``)
 
     Returns:
-        Tree-sitter Language object, or None if not available
+        Tree-sitter Language object, or ``None`` if not available
     """
-    try:
-        # Language loading depends on tree-sitter installation
-        # This is a simplified version - actual implementation should handle
-        # loading compiled language libraries properly
-        # In a real implementation, this would load the compiled language library
-        # For now, return None to indicate unsupported
-        return None
+    # Map aliases / extensions → language-pack grammar names.
+    # tree_sitter_language_pack ships javascript/typescript but no jsx grammar;
+    # JSX is parsed by the javascript grammar.
+    alias_map = {
+        "jsx": "javascript",
+        "js": "javascript",
+        "mjs": "javascript",
+        "tsx": "tsx",
+        "ts": "typescript",
+        "py": "python",
+        "rb": "ruby",
+        "cs": "csharp",
+        "c_sharp": "csharp",
+    }
+    grammar_name = alias_map.get(language.lower(), language.lower())
 
-    except ImportError:
+    try:
+        from tree_sitter_language_pack import get_language
+
+        # tree_sitter_language_pack types ``language_name`` with a Literal of
+        # supported grammars. We can't statically prove ``grammar_name`` matches,
+        # so cast to ``Any`` and rely on the LookupError path for unknowns.
+        return get_language(grammar_name)  # type: ignore[arg-type]
+    except (ImportError, LookupError):
+        return None
+    except Exception:
         return None
 
 
