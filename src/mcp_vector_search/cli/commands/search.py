@@ -8,6 +8,8 @@ from pathlib import Path
 import typer
 from loguru import logger
 
+from ...config.settings import ProjectConfig
+from ...core.database import VectorDatabase
 from ...core.embeddings import create_embedding_function
 from ...core.exceptions import ProjectNotFoundError
 from ...core.factory import create_database
@@ -539,8 +541,8 @@ def _parse_grade_filter(grade_str: str) -> set[str]:
 
 async def _check_auto_reindex(
     project_root: Path,
-    config: object,
-    database: object,
+    config: ProjectConfig,
+    database: VectorDatabase,
 ) -> None:
     """Check if a version-triggered reindex is needed and perform it non-fatally.
 
