@@ -1347,8 +1347,9 @@ class LanceVectorDatabase:
         offset = 0
 
         while offset < total_rows:
-            # Get batch slice
-            batch_df = df.iloc[offset : offset + batch_size]
+            # Get batch slice; pyright loses DataFrame type after boolean-mask
+            # filter (infers ndarray), so suppress the stub gap here.
+            batch_df = df.iloc[offset : offset + batch_size]  # type: ignore[attr-defined]
 
             chunks = []
             for _, row in batch_df.iterrows():
