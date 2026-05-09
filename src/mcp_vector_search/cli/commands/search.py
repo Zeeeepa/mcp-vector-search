@@ -381,7 +381,7 @@ def search_main(
                     search_mode=search_mode,
                     show_content=not no_content,
                     json_output=json_output,
-                    quality_weight=quality_weight,
+                    _quality_weight=quality_weight,
                 ):
                     return
 
@@ -431,11 +431,12 @@ def _try_daemon_search(
     search_mode: str,
     show_content: bool,
     json_output: bool,
-    quality_weight: float,
+    _quality_weight: float,
 ) -> bool:
     """Attempt a search via the daemon. Returns True on success (results rendered)."""
-    from ...core.models import SearchResult
-    from ...daemon.client import DaemonClient
+    from mcp_vector_search.core.models import SearchResult
+    from mcp_vector_search.daemon.client import DaemonClient
+
     from ..output import console
 
     async def _run() -> "tuple[bool, str | None, list[SearchResult] | None]":
