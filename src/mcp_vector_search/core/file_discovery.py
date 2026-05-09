@@ -30,6 +30,7 @@ class FileDiscovery:
         file_extensions: set[str],
         config: ProjectConfig | None = None,
         ignore_patterns: set[str] | None = None,
+        exclude_glob_patterns: list[str] | None = None,
     ) -> None:
         """Initialize file discovery.
 
@@ -37,7 +38,11 @@ class FileDiscovery:
             project_root: Project root directory
             file_extensions: Set of file extensions to index (e.g., {'.py', '.js'})
             config: Project configuration for filtering behavior
-            ignore_patterns: Additional patterns to ignore (merged with defaults)
+            ignore_patterns: Additional patterns to ignore (merged with defaults).
+                These match individual path components (e.g., 'node_modules').
+            exclude_glob_patterns: Gitignore-style glob patterns matched against
+                the full relative path from project root (e.g., '**/*.min.js').
+                Used to filter vendor libraries, test fixtures, build artifacts.
         """
         self.project_root = project_root
         self.file_extensions = file_extensions
@@ -47,6 +52,9 @@ class FileDiscovery:
             if ignore_patterns
             else set(DEFAULT_IGNORE_PATTERNS)
         )
+        # Gitignore-style glob patterns matched against full relative path.
+        # Distinct from _ignore_patterns above which match path components only.
+        self._exclude_glob_patterns: list[str] = list(exclude_glob_patterns or [])
 
         # Pre-compile ignore patterns for performance
         # This converts fnmatch patterns to regex and compiles them once at init
@@ -494,6 +502,17 @@ class FileDiscovery:
                 if self._matches_compiled_patterns(part):
                     self._ignore_path_cache[cache_key] = True
                     return True
+
+            # 1b. Check exclude_glob_patterns - gitignore-style globs matched against
+            # the full relative path. Used for vendor libs, test fixtures, build
+            # artifacts (e.g., '**/*.min.js', '**/vendor/**', '**/fixtures/**').
+            # These were already filtered through force_include_patterns above, so
+            # users can opt back in via that mechanism.
+            if self._exclude_glob_patterns:
+                for pattern in self._exclude_glob_patterns:
+                    if self._matches_glob_pattern(relative_path_str, pattern):
+                        self._ignore_path_cache[cache_key] = True
+                        return True
 
             # 2. Check force_include_paths THIRD - they override gitignore only (not default ignores)
             if self.config and self.config.force_include_paths:

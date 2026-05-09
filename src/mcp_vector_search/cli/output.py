@@ -205,12 +205,18 @@ def print_search_results(
             # Quality-aware ranking: show relevance, quality, and combined
             relevance_score = result._original_similarity
             combined_score = result.similarity_score
-            quality_score = result.quality_score or 0
+            # Only display Quality field if metrics are available.
+            # Many languages (Java, JS, Kotlin) lack complexity collectors so
+            # quality_score is None — surfacing "Quality: 0" was alarming and
+            # gave a false impression that the code was low-quality when really
+            # it was simply unmeasured.
+            quality_score = result.quality_score
 
             metadata_parts.append(f"Relevance: [cyan]{relevance_score:.2%}[/cyan]")
-            metadata_parts.append(
-                f"Quality: [{_get_quality_color(quality_score)}]{quality_score}[/{_get_quality_color(quality_score)}]"
-            )
+            if quality_score is not None and quality_score > 0:
+                metadata_parts.append(
+                    f"Quality: [{_get_quality_color(quality_score)}]{quality_score}[/{_get_quality_color(quality_score)}]"
+                )
             metadata_parts.append(f"Combined: [green]{combined_score:.2%}[/green]")
         else:
             # Pure semantic search: show only similarity score

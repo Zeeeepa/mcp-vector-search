@@ -30,6 +30,87 @@ def is_identifier_query(query: str) -> bool:
     return any(w in _PACKAGE_KEYWORDS for w in query.lower().split())
 
 
+# Patterns that signal a natural-language (NL) query as opposed to a code query.
+# NL queries like "functions that handle authentication" match docstrings better.
+_NL_QUESTION_WORDS = frozenset(
+    [
+        "what",
+        "where",
+        "how",
+        "why",
+        "when",
+        "which",
+        "who",
+        "find",
+        "show",
+        "get",
+        "list",
+        "describe",
+        "explain",
+        "return",
+        "returns",
+        "purpose",
+        "does",
+        "do",
+        "handle",
+        "handles",
+        "implement",
+        "implements",
+        "used",
+        "use",
+        "fetch",
+        "check",
+        "validate",
+        "process",
+        "manage",
+        "create",
+        "build",
+        "compute",
+        "calculate",
+    ]
+)
+
+_CODE_OPERATOR_PATTERN = re.compile(
+    r"[(){}\[\]=<>!&|+\-*/\\;:@#%^~`]"  # code operators/punctuation
+)
+_SNAKE_CASE_PATTERN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}\b")
+
+
+def is_nl_query(query: str) -> bool:
+    """Return True if the query looks like a natural-language question/description.
+
+    NL queries match docstrings and comments better than raw code bodies.
+    Code queries (with operators, snake_case, CamelCase identifiers) match code better.
+
+    Examples:
+        is_nl_query("functions that handle authentication") → True
+        is_nl_query("retry_count += 1") → False
+        is_nl_query("find retry with exponential backoff") → True
+        is_nl_query("AsyncIterator[StreamApp]") → False
+    """
+    # Queries with code operators are code queries
+    if _CODE_OPERATOR_PATTERN.search(query):
+        return False
+
+    # Queries with CamelCase or snake_case identifiers are code queries
+    if _IDENTIFIER_PATTERNS[1].search(query):  # CamelCase pattern
+        return False
+    if _SNAKE_CASE_PATTERN.search(query):
+        return False
+
+    # Queries that start with or contain NL question/intent words are NL queries
+    words = query.lower().split()
+    if not words:
+        return False
+    if words[0] in _NL_QUESTION_WORDS:
+        return True
+    if any(w in _NL_QUESTION_WORDS for w in words):
+        return True
+
+    # Queries with 4+ words and no code patterns are likely NL
+    return len(words) >= 4
+
+
 class QueryProcessor:
     """Handles query preprocessing, expansion, and adaptive threshold calculation."""
 

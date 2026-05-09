@@ -258,7 +258,7 @@ class IndexPipeline:
         self,
         producer_id: int,
         file_slice: list[tuple[Path, str, str]],
-        effective_num_producers: int,
+        _effective_num_producers: int,
         phase_start_time: float,
         metrics_tracker,
         file_batch_size: int,
@@ -268,6 +268,8 @@ class IndexPipeline:
         with metrics_tracker.phase("parsing") as parsing_metrics:
             for batch_start in range(0, len(file_slice), file_batch_size):
                 # Check if pipeline was cancelled (consumer crashed)
+                if self.pipeline_cancel is None:
+                    raise RuntimeError("pipeline_cancel not initialized")
                 if self.pipeline_cancel.is_set():
                     logger.warning(
                         "Producer %d: pipeline cancelled, stopping", producer_id
@@ -275,6 +277,8 @@ class IndexPipeline:
                     return
 
                 # Check if consumer is still alive
+                if self.consumer_task is None:
+                    raise RuntimeError("consumer_task not initialized")
                 if self.consumer_task.done():
                     exc = self.consumer_task.exception()
                     logger.error(
@@ -312,7 +316,7 @@ class IndexPipeline:
                     file_hash = file_hashes.get(file_path, "")
 
                     if idx % 10 == 0:
-                        is_ok, usage_pct, status = (
+                        is_ok, usage_pct, _status = (
                             self.memory_monitor.check_memory_limit()
                         )
                         if not is_ok:
@@ -379,6 +383,10 @@ class IndexPipeline:
                             f"Phase 1 progress: {self.files_indexed}/{len(self.files_to_process)} files, "
                             f"{self.chunks_created} chunks | Queuing {len(batch_chunks)} chunks for embedding"
                         )
+                    if self.chunk_queue is None:
+                        raise RuntimeError("chunk_queue not initialized")
+                    if self.pipeline_cancel is None:
+                        raise RuntimeError("pipeline_cancel not initialized")
                     put_task = asyncio.ensure_future(
                         self.chunk_queue.put(
                             {
@@ -388,7 +396,7 @@ class IndexPipeline:
                         )
                     )
                     cancel_task = asyncio.ensure_future(self.pipeline_cancel.wait())
-                    done, pending = await asyncio.wait(
+                    _done, pending = await asyncio.wait(
                         [put_task, cancel_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
@@ -462,6 +470,8 @@ class IndexPipeline:
 
         with metrics_tracker.phase("embedding") as embedding_metrics:
             try:
+                if self.chunk_queue is None:
+                    raise RuntimeError("chunk_queue not initialized")
                 while sentinels_received < effective_num_producers:
                     batch_data = await self.chunk_queue.get()
 
@@ -518,7 +528,7 @@ class IndexPipeline:
                             contents = [build_embed_text(c) for c in emb_batch]
 
                             # Check memory before expensive embedding
-                            is_ok, usage_pct, status = (
+                            is_ok, usage_pct, _status = (
                                 self.memory_monitor.check_memory_limit()
                             )
                             if not is_ok:
@@ -544,18 +554,20 @@ class IndexPipeline:
                             vectors = None
                             if hasattr(self.database, "_embedding_function"):
                                 vectors = await asyncio.to_thread(
-                                    self.database._embedding_function, contents
+                                    self.database._embedding_function,  # type: ignore[union-attr]
+                                    contents,
                                 )
                             elif hasattr(self.database, "_collection") and hasattr(
-                                self.database._collection, "_embedding_function"
+                                self.database._collection,
+                                "_embedding_function",  # type: ignore[union-attr]
                             ):
                                 vectors = await asyncio.to_thread(
-                                    self.database._collection._embedding_function,
+                                    self.database._collection._embedding_function,  # type: ignore[union-attr]
                                     contents,
                                 )
                             elif hasattr(self.database, "embedding_function"):
                                 vectors = await asyncio.to_thread(
-                                    self.database.embedding_function.embed_documents,
+                                    self.database.embedding_function.embed_documents,  # type: ignore[union-attr]
                                     contents,
                                 )
                             else:
@@ -591,6 +603,22 @@ class IndexPipeline:
                                 await self.vectors_backend.add_vectors(
                                     write_buffer, model_version=model_name
                                 )
+                                # Mark these chunks as embedded so chunks.lance
+                                # reflects status='complete' instead of leaving
+                                # them stuck at 'pending' (which previously made
+                                # `mvs status` report incorrect counts after a
+                                # successful pipeline run).
+                                flushed_ids = [c["chunk_id"] for c in write_buffer]
+                                try:
+                                    await self.chunks_backend.mark_chunks_complete(
+                                        flushed_ids
+                                    )
+                                except Exception as mark_err:
+                                    logger.warning(
+                                        "Failed to mark %d chunks complete after flush: %s",
+                                        len(flushed_ids),
+                                        mark_err,
+                                    )
                                 logger.debug(
                                     f"Flushed {len(write_buffer)} vectors to LanceDB"
                                 )
@@ -643,6 +671,8 @@ class IndexPipeline:
             finally:
                 # FIX 1 (CRITICAL RELIABILITY): Signal producers that the
                 # consumer is exiting so they stop blocking on chunk_queue.put().
+                if self.pipeline_cancel is None:
+                    raise RuntimeError("pipeline_cancel not initialized")
                 self.pipeline_cancel.set()
 
                 # Always flush remaining write buffer even if an exception occurred
@@ -652,6 +682,16 @@ class IndexPipeline:
                         await self.vectors_backend.add_vectors(
                             write_buffer, model_version=model_name
                         )
+                        # Mark final batch complete (mirrors per-batch flush above).
+                        flushed_ids = [c["chunk_id"] for c in write_buffer]
+                        try:
+                            await self.chunks_backend.mark_chunks_complete(flushed_ids)
+                        except Exception as mark_err:
+                            logger.warning(
+                                "Failed to mark %d chunks complete on final flush: %s",
+                                len(flushed_ids),
+                                mark_err,
+                            )
                         logger.debug(
                             f"Flushed remaining {len(write_buffer)} vectors to LanceDB"
                         )

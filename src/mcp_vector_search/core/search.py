@@ -20,7 +20,7 @@ from .mmr import mmr_rerank
 from .models import SearchResult
 from .query_analyzer import QueryAnalyzer
 from .query_expander import QueryExpander
-from .query_processor import QueryProcessor
+from .query_processor import QueryProcessor, is_nl_query
 from .reranker import CrossEncoderReranker
 from .result_enhancer import ResultEnhancer
 from .result_ranker import ResultRanker
@@ -1812,6 +1812,59 @@ class SemanticSearchEngine:
                 )
 
                 rrf_scores[chunk_id] = vector_score + bm25_score
+
+            # Hybrid chunk-type boost: when enabled, nudge scores based on
+            # how well the query type (NL vs code) aligns with the chunk type.
+            # Controlled by MCP_VECTOR_SEARCH_HYBRID_CHUNK_EMBEDDING (default: true).
+            _hybrid_chunk_enabled = os.environ.get(
+                "MCP_VECTOR_SEARCH_HYBRID_CHUNK_EMBEDDING", "true"
+            ).lower() not in ("false", "0", "no")
+
+            if _hybrid_chunk_enabled and (vector_results or bm25_results):
+                _query_is_nl = is_nl_query(query)
+                # Build chunk_id -> chunk_type map from available vector results
+                _chunk_type_map: dict[str, str] = {
+                    self._get_chunk_id(r): r.chunk_type for r in vector_results
+                }
+                # Natural-language queries: boost docstring/comment/text chunks,
+                # slightly suppress pure code chunks.
+                # Code queries: boost function/method/class chunks.
+                nl_chunk_types = frozenset(("docstring", "comment", "text", "module"))
+                code_chunk_types = frozenset(
+                    (
+                        "function",
+                        "method",
+                        "class",
+                        "code",
+                        "class_method",
+                        "interface",
+                        "mixin",
+                        "constructor",
+                        "widget",
+                    )
+                )
+                boost = 1.15  # 15% boost for matching chunk type
+                dampen = 0.90  # 10% dampen for mismatching chunk type
+
+                for chunk_id in list(rrf_scores.keys()):
+                    ct = _chunk_type_map.get(chunk_id, "code")
+                    if _query_is_nl:
+                        if ct in nl_chunk_types:
+                            rrf_scores[chunk_id] *= boost
+                        elif ct in code_chunk_types:
+                            rrf_scores[chunk_id] *= dampen
+                    else:
+                        if ct in code_chunk_types:
+                            rrf_scores[chunk_id] *= boost
+                        elif ct in nl_chunk_types:
+                            rrf_scores[chunk_id] *= dampen
+
+                logger.debug(
+                    "Hybrid chunk-type boost applied: query_is_nl=%s, "
+                    "%d chunks re-scored",
+                    _query_is_nl,
+                    len(rrf_scores),
+                )
 
             # Normalize RRF scores to 0.0-1.0 range for consistent display
             if rrf_scores:

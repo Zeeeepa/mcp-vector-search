@@ -224,9 +224,9 @@ class CodeChunk(ContentChunk):
     function_name: str | None = None
     class_name: str | None = None
     docstring: str | None = None
-    imports: list[str] = None
-    calls: list[str] = None  # Function/method calls within this chunk
-    inherits_from: list[str] = None  # Base classes (for class chunks)
+    imports: list[str] | None = None
+    calls: list[str] | None = None  # Function/method calls within this chunk
+    inherits_from: list[str] | None = None  # Base classes (for class chunks)
 
     # Enhancement 1: Complexity scoring
     complexity_score: float = 0.0
@@ -234,23 +234,23 @@ class CodeChunk(ContentChunk):
     # Enhancement 3: Hierarchical relationships
     chunk_id: str | None = None
     parent_chunk_id: str | None = None
-    child_chunk_ids: list[str] = None
+    child_chunk_ids: list[str] | None = None
     chunk_depth: int = 0
 
     # Enhancement 4: Enhanced metadata
-    decorators: list[str] = None
-    parameters: list[dict] = None
+    decorators: list[str] | None = None
+    parameters: list[dict] | None = None
     return_type: str | None = None
-    type_annotations: dict[str, str] = None
+    type_annotations: dict[str, str] | None = None
 
     # Enhancement 5: Monorepo support
     subproject_name: str | None = None  # "ewtn-plus-foundation"
     subproject_path: str | None = None  # Relative path from root
 
     # Enhancement 6: NLP-extracted entities (from docstrings/comments)
-    nlp_keywords: list[str] = None  # Keywords extracted via YAKE
-    nlp_code_refs: list[str] = None  # Backtick code references
-    nlp_technical_terms: list[str] = None  # CamelCase, ACRONYMS, snake_case
+    nlp_keywords: list[str] | None = None  # Keywords extracted via YAKE
+    nlp_code_refs: list[str] | None = None  # Backtick code references
+    nlp_technical_terms: list[str] | None = None  # CamelCase, ACRONYMS, snake_case
 
     # Enhancement 7: Git blame metadata (who last touched this code)
     last_author: str | None = None  # Author who last modified any line in this chunk
@@ -258,7 +258,7 @@ class CodeChunk(ContentChunk):
     commit_hash: str | None = None  # Commit hash of last modification
 
     # Enhancement 8: Tags from markdown frontmatter
-    tags: list[str] = (
+    tags: list[str] | None = (
         None  # Tags extracted from frontmatter (categories, keywords, labels)
     )
 
@@ -455,6 +455,9 @@ class SearchResult(BaseModel):
         default=None, description="Unique chunk identifier from the vector index"
     )
 
+    # Original similarity score before quality-aware re-ranking (set at display time)
+    _original_similarity: float | None = None
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
@@ -467,7 +470,7 @@ class SearchResult(BaseModel):
         """Get a human-readable location string."""
         return f"{self.file_path}:{self.start_line}-{self.end_line}"
 
-    def calculate_quality_score(self) -> int:
+    def calculate_quality_score(self) -> int | None:
         """Calculate quality score based on complexity grade and code smells.
 
         Formula:
@@ -596,7 +599,7 @@ class Directory:
     file_count: int = 0  # Number of files directly in this directory
     subdirectory_count: int = 0  # Number of subdirectories
     total_chunks: int = 0  # Total code chunks in this directory (recursive)
-    languages: dict[str, int] = None  # Language distribution in this directory
+    languages: dict[str, int] | None = None  # Language distribution in this directory
     depth: int = 0  # Depth from project root (0 = root)
     is_package: bool = False  # True if contains __init__.py or package.json
     last_modified: float | None = (

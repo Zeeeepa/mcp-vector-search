@@ -63,6 +63,103 @@ from .relationships import RelationshipStore
 from .resource_manager import calculate_optimal_workers
 from .vectors_backend import VectorsBackend
 
+# Default gitignore-style glob patterns excluded from indexing.
+# Matched against the relative file path from project root using
+# FileDiscovery._matches_glob_pattern (supports ** and * wildcards).
+#
+# Filters vendor JavaScript libraries (jQuery, Highcharts, Material UI, etc.),
+# test fixtures, snapshots, build artifacts, and minified files.  These pollute
+# the embedding codebook with non-source noise and degrade search quality for
+# code queries.
+#
+# Project-level overrides via .mcp-vector-search/exclude-patterns.txt:
+#   - One glob per line; '#' starts a comment
+#   - Lines starting with '!' remove a default pattern (e.g. '!**/vendor/**')
+#   - Other lines extend defaults (e.g. '**/legacy_archive/**')
+DEFAULT_EXCLUDE_PATTERNS: list[str] = [
+    # Vendor / third-party assets
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/assets/js/ext/**",
+    "**/assets/js/lib/**",
+    "**/assets/js/vendor/**",
+    "**/static/js/vendor/**",
+    "**/public/js/vendor/**",
+    # Minified files (any location)
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.bundle.js",
+    # Test fixtures / snapshots / resources
+    "**/testResults/**",
+    "**/testInput/**",
+    "**/testFixtures/**",
+    "**/test-fixtures/**",
+    "**/test_fixtures/**",
+    "**/fixtures/**",
+    "**/snapshots/**",
+    "__snapshots__/**",
+    "**/__snapshots__/**",
+    # Large generated / binary-ish files
+    "**/*.map",  # source maps
+    "**/*.min.*",  # any minified
+    "**/*.lock",  # lock files
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/poetry.lock",
+    "**/Pipfile.lock",
+    # Build output
+    "**/dist/**",
+    "**/build/**",
+    "**/target/**",
+    "**/.gradle/**",
+    "**/out/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/.cache/**",
+]
+
+
+def _load_project_exclude_overrides(project_root: Path) -> list[str]:
+    """Merge DEFAULT_EXCLUDE_PATTERNS with project-level overrides.
+
+    Reads ``<project_root>/.mcp-vector-search/exclude-patterns.txt`` if present.
+    Each non-empty, non-comment line is either:
+      - A glob pattern that extends the defaults
+      - A line beginning with ``!`` that removes a matching default pattern
+
+    Args:
+        project_root: Project root directory.
+
+    Returns:
+        Merged list of glob patterns (defaults plus extensions, minus removals).
+    """
+    patterns: list[str] = list(DEFAULT_EXCLUDE_PATTERNS)
+    override_file = project_root / ".mcp-vector-search" / "exclude-patterns.txt"
+    if not override_file.exists():
+        return patterns
+
+    try:
+        added: list[str] = []
+        removed: set[str] = set()
+        for raw_line in override_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("!"):
+                removed.add(line[1:].strip())
+            else:
+                added.append(line)
+
+        merged = [p for p in patterns if p not in removed] + added
+        logger.info(
+            f"Loaded exclude-patterns.txt: +{len(added)} added, -{len(removed)} removed"
+        )
+        return merged
+    except OSError as e:
+        logger.warning(f"Failed to read {override_file}: {e}")
+        return patterns
+
 
 @dataclass
 class SemanticIndexerConfig:
@@ -315,12 +412,17 @@ class SemanticIndexer:
         else:
             raise ValueError("Either config or file_extensions must be provided")
 
+        # Load default exclusion globs + project-level overrides.
+        # Filters vendor JS libs, test fixtures, build artifacts.
+        exclude_glob_patterns = _load_project_exclude_overrides(project_root)
+
         # Initialize helper classes
         self.file_discovery = FileDiscovery(
             project_root=project_root,
             file_extensions=file_extensions_set,
             config=config,
             ignore_patterns=ignore_patterns,
+            exclude_glob_patterns=exclude_glob_patterns,
         )
 
         self.metadata = IndexMetadata(self.index_path)
