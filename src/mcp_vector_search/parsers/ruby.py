@@ -757,6 +757,8 @@ class RubyParser(BaseParser):
         if self._use_tree_sitter:
             try:
                 content_bytes = content.encode("utf-8")
+                if self._parser is None:
+                    raise RuntimeError("Parser not initialized")
                 tree = self._parser.parse(content_bytes)
                 return self._extract_chunks_from_tree(tree, content, file_path)
             except Exception as e:
@@ -766,7 +768,7 @@ class RubyParser(BaseParser):
                 loop = asyncio.new_event_loop()
                 try:
                     return loop.run_until_complete(
-                        self._regex_parse(content, file_path)
+                        self._fallback_parse(content, file_path)
                     )
                 finally:
                     loop.close()
@@ -775,7 +777,7 @@ class RubyParser(BaseParser):
 
             loop = asyncio.new_event_loop()
             try:
-                return loop.run_until_complete(self._regex_parse(content, file_path))
+                return loop.run_until_complete(self._fallback_parse(content, file_path))
             finally:
                 loop.close()
 

@@ -68,6 +68,8 @@ class JavaScriptParser(BaseParser):
         if self._use_tree_sitter:
             try:
                 content_bytes = content.encode("utf-8")
+                if self._parser is None:
+                    raise RuntimeError("Parser not initialized")
                 tree = self._parser.parse(content_bytes)
                 return self._extract_chunks_from_tree(tree, content, file_path)
             except Exception as e:
@@ -97,6 +99,8 @@ class JavaScriptParser(BaseParser):
         if self._use_tree_sitter:
             try:
                 content_bytes = content.encode("utf-8")
+                if self._parser is None:
+                    raise RuntimeError("Parser not initialized")
                 tree = self._parser.parse(content_bytes)
                 return self._extract_chunks_from_tree(tree, content, file_path)
             except Exception as e:
@@ -464,7 +468,11 @@ class JavaScriptParser(BaseParser):
                         "optional_parameter",
                         "rest_parameter",
                     ):
-                        param_info = {"name": None, "type": None, "default": None}
+                        param_info: dict[str, str | bool | None] = {
+                            "name": None,
+                            "type": None,
+                            "default": None,
+                        }
 
                         # Extract parameter details
                         if param_node.type == "identifier":
@@ -484,15 +492,21 @@ class JavaScriptParser(BaseParser):
                                         subchild
                                     )
 
-                        if param_info["name"] and param_info["name"] not in (
-                            "(",
-                            ")",
-                            ",",
-                            "...",
+                        param_name = param_info["name"]
+                        if (
+                            param_name
+                            and isinstance(param_name, str)
+                            and param_name
+                            not in (
+                                "(",
+                                ")",
+                                ",",
+                                "...",
+                            )
                         ):
                             # Clean up rest parameters
-                            if param_info["name"].startswith("..."):
-                                param_info["name"] = param_info["name"][3:]
+                            if param_name.startswith("..."):
+                                param_info["name"] = param_name[3:]
                                 param_info["rest"] = True
                             parameters.append(param_info)
 

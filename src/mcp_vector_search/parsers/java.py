@@ -68,6 +68,8 @@ class JavaParser(BaseParser):
         if self._use_tree_sitter:
             try:
                 content_bytes = content.encode("utf-8")
+                if self._parser is None:
+                    raise RuntimeError("Parser not initialized")
                 tree = self._parser.parse(content_bytes)
                 return self._extract_chunks_from_tree(tree, content, file_path)
             except Exception as e:
@@ -97,6 +99,8 @@ class JavaParser(BaseParser):
         if self._use_tree_sitter:
             try:
                 content_bytes = content.encode("utf-8")
+                if self._parser is None:
+                    raise RuntimeError("Parser not initialized")
                 tree = self._parser.parse(content_bytes)
                 return self._extract_chunks_from_tree(tree, content, file_path)
             except Exception as e:
