@@ -1005,11 +1005,30 @@ class LanceVectorDatabase:
         try:
             # Count chunks before deletion
             file_path_str = str(file_path)
-            count_df = (
-                self._table.to_pandas()
-                .query(f"file_path == '{file_path_str}'")
-                .shape[0]
-            )
+            # Fix: column-projected scanner with filter pushdown — avoids loading
+            # the entire table (including vector/content columns) just to count
+            # rows for a single file.
+            escaped = file_path_str.replace(chr(39), chr(39) * 2)
+            try:
+                arrow_tbl = (
+                    self._table.to_lance()
+                    .scanner(
+                        columns=["file_path"],
+                        filter=f"file_path = '{escaped}'",
+                    )
+                    .to_table()
+                )
+                count_df = len(arrow_tbl)
+            except Exception as scan_err:
+                logger.debug(
+                    "Column-projected pre-delete count failed, falling back: %s",
+                    scan_err,
+                )
+                count_df = (
+                    self._table.to_pandas()
+                    .query(f"file_path == '{file_path_str}'")
+                    .shape[0]
+                )
 
             if count_df == 0:
                 return 0
@@ -1124,7 +1143,22 @@ class LanceVectorDatabase:
                 )
 
             # Get detailed statistics using pandas
-            df = self._table.to_pandas()
+            # Fix: column-projected scanner — only file_path + language are needed
+            # for stats. Loading the full table (with vectors/content) used ~600MB
+            # on a 200K-row index.
+            try:
+                df = (
+                    self._table.to_lance()
+                    .scanner(columns=["file_path", "language"])
+                    .to_table()
+                    .to_pandas()
+                )
+            except Exception as scan_err:
+                logger.debug(
+                    "Column-projected stats scanner failed, falling back: %s",
+                    scan_err,
+                )
+                df = self._table.to_pandas()
 
             # Count unique files
             total_files = int(cast(int, df["file_path"].nunique()))
@@ -1334,7 +1368,16 @@ class LanceVectorDatabase:
         if self._table is None:
             return
         # Load table to Pandas (this is the memory-intensive step)
-        df = self._table.to_pandas()
+        # Fix: exclude any embedding/vector columns (chunks table does not have
+        # one, but we project explicitly for safety + reduced footprint).
+        try:
+            cols = [f.name for f in self._table.schema if f.name != "vector"]
+            df = self._table.to_lance().scanner(columns=cols).to_table().to_pandas()
+        except Exception as scan_err:
+            logger.debug(
+                "Column-projected chunks scan failed, falling back: %s", scan_err
+            )
+            df = self._table.to_pandas()
 
         # Apply filters if provided
         if file_path:
@@ -1569,7 +1612,22 @@ class LanceVectorDatabase:
                     raise
 
             # Fallback: Load and filter with Pandas
-            df = self._table.to_pandas()
+            # Fix: project only the columns needed for filtering (file_path,
+            # language) to avoid pulling vector/content columns into RAM.
+            projection_cols = ["file_path", "language"]
+            try:
+                df = (
+                    self._table.to_lance()
+                    .scanner(columns=projection_cols)
+                    .to_table()
+                    .to_pandas()
+                )
+            except Exception as scan_err:
+                logger.debug(
+                    "Column-projected chunk-count scanner failed, falling back: %s",
+                    scan_err,
+                )
+                df = self._table.to_pandas()
             if file_path:
                 df = df[df["file_path"] == file_path]
             if language:

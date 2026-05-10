@@ -940,9 +940,19 @@ class VectorsBackend:
                     "Column-projected pre-delete count failed, falling back: %s",
                     proj_err,
                 )
-                df_fallback = self._table.to_pandas().query(
-                    f"file_path == '{file_path}'"
-                )
+                # Fallback path: still project columns to avoid loading the
+                # 768-float vector column for every row.
+                try:
+                    arrow_tbl = (
+                        self._table.to_lance().scanner(columns=["file_path"]).to_table()
+                    )
+                    df_fallback = arrow_tbl.to_pandas().query(
+                        f"file_path == '{file_path}'"
+                    )
+                except Exception:
+                    df_fallback = self._table.to_pandas().query(
+                        f"file_path == '{file_path}'"
+                    )
                 count = len(df_fallback)
 
             if count == 0:
@@ -1090,7 +1100,20 @@ class VectorsBackend:
                     "Filtered get_chunk_vector scanner failed, falling back: %s",
                     scan_err,
                 )
-                df = self._table.to_pandas().query(f"chunk_id == '{chunk_id}'")
+                # Fallback: still project chunk_id + vector and filter via SQL
+                # so we don't load every row's 768-float vector into memory.
+                try:
+                    arrow_tbl = (
+                        self._table.to_lance()
+                        .scanner(
+                            filter=f"chunk_id = '{escaped}'",
+                            columns=["chunk_id", "vector"],
+                        )
+                        .to_table()
+                    )
+                    df = arrow_tbl.to_pandas()
+                except Exception:
+                    df = self._table.to_pandas().query(f"chunk_id == '{chunk_id}'")
                 if df.empty:
                     return None
                 vector = df.iloc[0]["vector"]
@@ -1153,7 +1176,20 @@ class VectorsBackend:
                         "Filtered batch vectors scanner failed, falling back: %s",
                         scan_err,
                     )
-                    df = self._table.to_pandas().query(f"chunk_id in [{id_list}]")
+                    # Fallback: still project chunk_id + vector and filter
+                    # via SQL IN clause to bound memory.
+                    try:
+                        arrow_tbl = (
+                            self._table.to_lance()
+                            .scanner(
+                                filter=f"chunk_id IN ({id_list})",
+                                columns=["chunk_id", "vector"],
+                            )
+                            .to_table()
+                        )
+                        df = arrow_tbl.to_pandas()
+                    except Exception:
+                        df = self._table.to_pandas().query(f"chunk_id in [{id_list}]")
                     rows_iter = (
                         (row["chunk_id"], row["vector"]) for _, row in df.iterrows()
                     )
@@ -1203,8 +1239,21 @@ class VectorsBackend:
                 "Column-projected has_vector check failed, falling back: %s", e
             )
             try:
-                df = self._table.to_pandas().query(f"chunk_id == '{chunk_id}'")
-                return not df.empty
+                # Fallback: project chunk_id + filter via SQL to avoid loading
+                # 768-float vectors for every row.
+                try:
+                    arrow_tbl = (
+                        self._table.to_lance()
+                        .scanner(
+                            filter=f"chunk_id = '{escaped}'",
+                            columns=["chunk_id"],
+                        )
+                        .to_table()
+                    )
+                    return arrow_tbl.num_rows > 0
+                except Exception:
+                    df = self._table.to_pandas().query(f"chunk_id == '{chunk_id}'")
+                    return not df.empty
             except Exception as e2:
                 logger.warning(f"Failed to check vector for chunk {chunk_id}: {e2}")
                 return False
@@ -1261,7 +1310,18 @@ class VectorsBackend:
                 logger.warning(
                     "Column-projected stats scanner failed, falling back: %s", proj_err
                 )
-                df_full = self._table.to_pandas()
+                # Fallback: project schema columns excluding the vector column
+                # so stats don't load 768-float vectors (300MB+ on 100K rows).
+                try:
+                    cols = [f.name for f in self._table.schema if f.name != "vector"]
+                    df_full = (
+                        self._table.to_lance()
+                        .scanner(columns=cols)
+                        .to_table()
+                        .to_pandas()
+                    )
+                except Exception:
+                    df_full = self._table.to_pandas()
                 file_count = df_full["file_path"].nunique()
                 language_counts = df_full["language"].value_counts().to_dict()
                 chunk_type_counts = df_full["chunk_type"].value_counts().to_dict()
@@ -1532,7 +1592,17 @@ class VectorsBackend:
                     "Column-projected chunk_id scanner failed, falling back: %s",
                     scan_err,
                 )
-                df = self._table.to_pandas()
+                # Fallback: project just chunk_id — never load 768-float
+                # vectors when we only need string IDs for set membership.
+                try:
+                    df = (
+                        self._table.to_lance()
+                        .scanner(columns=["chunk_id"])
+                        .to_table()
+                        .to_pandas()
+                    )
+                except Exception:
+                    df = self._table.to_pandas()
                 embedded_ids = set(df["chunk_id"].values)
 
             # Find chunks without vectors

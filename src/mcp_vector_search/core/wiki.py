@@ -343,7 +343,30 @@ class WikiGenerator:
             if not pending and offset == 0:
                 try:
                     if self.chunks_backend._table is not None:
-                        df = self.chunks_backend._table.to_pandas()
+                        # Fix: project only the columns the concept extractor
+                        # actually consumes — skip large `content`, `calls`,
+                        # `imports`, etc. Reduces RAM substantially on large
+                        # repos.
+                        _wiki_cols = [
+                            "chunk_id",
+                            "file_path",
+                            "name",
+                            "parent_name",
+                            "docstring",
+                        ]
+                        try:
+                            df = (
+                                self.chunks_backend._table.to_lance()
+                                .scanner(columns=_wiki_cols)
+                                .to_table()
+                                .to_pandas()
+                            )
+                        except Exception as scan_err:
+                            logger.debug(
+                                "Column-projected wiki scan failed, falling back: %s",
+                                scan_err,
+                            )
+                            df = self.chunks_backend._table.to_pandas()
                         return df.to_dict("records")
                 except Exception as e:
                     logger.warning(f"Failed to get chunks from chunks_backend: {e}")

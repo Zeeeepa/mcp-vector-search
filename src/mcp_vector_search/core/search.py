@@ -1044,7 +1044,18 @@ class SemanticSearchEngine:
                             df = arrow_tbl.to_pandas()
                     except Exception as e:
                         logger.debug(f"scanner fallback at model_version_check: {e}")
-                        df = self._vectors_backend._table.to_pandas().head(1)
+                        # Fallback: project just model_version (no vectors) and
+                        # take the first row.
+                        try:
+                            _arrow_head = (
+                                self._vectors_backend._table.to_lance()
+                                .scanner(columns=["model_version"])
+                                .to_table()
+                                .slice(0, 1)
+                            )
+                            df = _arrow_head.to_pandas()
+                        except Exception:
+                            df = self._vectors_backend._table.to_pandas().head(1)
                     if (
                         df is not None
                         and not df.empty
@@ -1602,7 +1613,14 @@ class SemanticSearchEngine:
                     "Column-projected BM25 scan failed, falling back to full scan: %s",
                     scan_err,
                 )
-                df = table.to_pandas()
+                # Fallback: even when scanner API fails, project columns via
+                # Lance dataset to avoid the 768-d vector column.
+                try:
+                    _ds = table.to_lance()
+                    _cols_no_vec = [f.name for f in _ds.schema if f.name != "vector"]
+                    df = _ds.scanner(columns=_cols_no_vec).to_table().to_pandas()
+                except Exception:
+                    df = table.to_pandas()
 
             if df.empty:
                 logger.debug("Vectors table is empty, cannot build BM25 index")
@@ -1712,9 +1730,22 @@ class SemanticSearchEngine:
                         df = scanner.to_table().to_pandas()
                     except Exception as e:
                         logger.debug(f"scanner fallback at bm25_chunk_lookup: {e}")
-                        df = vectors_table.to_pandas().query(
-                            f"chunk_id == '{chunk_id}'"
-                        )
+                        # Fallback: project metadata columns + filter via SQL
+                        # to avoid scanning the entire vectors table per BM25 hit.
+                        try:
+                            _arrow = (
+                                vectors_table.to_lance()
+                                .scanner(
+                                    filter=f"chunk_id = '{escaped}'",
+                                    columns=_CHUNK_META_COLS,
+                                )
+                                .to_table()
+                            )
+                            df = _arrow.to_pandas()
+                        except Exception:
+                            df = vectors_table.to_pandas().query(
+                                f"chunk_id == '{chunk_id}'"
+                            )
                     if df.empty:
                         continue
 
@@ -1851,7 +1882,17 @@ class SemanticSearchEngine:
                         df = scanner.to_table().to_pandas()
                     except Exception as e:
                         logger.debug(f"scanner fallback at bm25_tests_only_filter: {e}")
-                        df = _tbl.to_pandas()
+                        # Fallback: still project the two columns we actually
+                        # need (chunk_id, file_path) so we don't pull vectors.
+                        try:
+                            df = (
+                                _tbl.to_lance()
+                                .scanner(columns=["chunk_id", "file_path"])
+                                .to_table()
+                                .to_pandas()
+                            )
+                        except Exception:
+                            df = _tbl.to_pandas()
                     df_subset = df[df["chunk_id"].isin(chunk_ids_in_play)]
                     test_chunk_ids = {
                         str(row["chunk_id"])
@@ -2003,9 +2044,22 @@ class SemanticSearchEngine:
                                 logger.debug(
                                     f"scanner fallback at hybrid_rrf_chunk_lookup: {e}"
                                 )
-                                df = _tbl_inner.to_pandas().query(
-                                    f"chunk_id == '{chunk_id}'"
-                                )
+                                # Fallback: project metadata cols + filter via SQL
+                                # so we don't load every row's vector.
+                                try:
+                                    _arrow_inner = (
+                                        _tbl_inner.to_lance()
+                                        .scanner(
+                                            filter=f"chunk_id = '{_escaped}'",
+                                            columns=_CHUNK_META_COLS,
+                                        )
+                                        .to_table()
+                                    )
+                                    df = _arrow_inner.to_pandas()
+                                except Exception:
+                                    df = _tbl_inner.to_pandas().query(
+                                        f"chunk_id == '{chunk_id}'"
+                                    )
                             if not df.empty:
                                 row = df.iloc[0]
                                 search_result = SearchResult(
