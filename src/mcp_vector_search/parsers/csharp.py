@@ -677,7 +677,7 @@ class CSharpParser(BaseParser):
         # Find the opening brace
         brace_start = content.find("{", start_pos)
         if brace_start == -1:
-            return None, 0
+            return "", 0
 
         # Count braces to find matching closing brace
         brace_count = 0
@@ -723,7 +723,7 @@ class CSharpParser(BaseParser):
 
             pos += 1
 
-        return None, 0
+        return "", 0
 
     def parse_file_sync(self, file_path: Path) -> list[CodeChunk]:
         """Parse file synchronously (optimized for multiprocessing workers)."""

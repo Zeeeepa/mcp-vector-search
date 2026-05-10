@@ -614,7 +614,7 @@ class JavaParser(BaseParser):
         # Find the opening brace
         brace_start = content.find("{", start_pos)
         if brace_start == -1:
-            return None, 0
+            return "", 0
 
         # Count braces to find matching closing brace
         brace_count = 0
@@ -648,7 +648,7 @@ class JavaParser(BaseParser):
 
             pos += 1
 
-        return None, 0
+        return "", 0
 
     def get_supported_extensions(self) -> list[str]:
         """Get supported file extensions."""
