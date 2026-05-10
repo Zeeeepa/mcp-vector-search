@@ -608,10 +608,13 @@ class KnowledgeGraph:
                     "If you observed missing CONTAINS_SECTION edges previously, "
                     "run `mvs kg rebuild` to backfill them."
                 )
-            except Exception:
+            except Exception as e:
                 # Column already exists OR Kuzu rejected the ALTER — expected
                 # for fresh/already-migrated DBs.
-                pass
+                logger.debug(
+                    f"ALTER TABLE CONTAINS_SECTION ADD {col_name} skipped "
+                    f"(already exists or unsupported): {e}"
+                )
 
         # Create RELATED_TO relationship table (Document → Document cross-references)
         try:
@@ -643,8 +646,11 @@ class KnowledgeGraph:
                     "If you observed missing RELATED_TO edges previously, "
                     "run `mvs kg rebuild` to backfill them."
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    f"ALTER TABLE RELATED_TO ADD {col_name} skipped "
+                    f"(already exists or unsupported): {e}"
+                )
 
         # Create DESCRIBES relationship table (Document → CodeEntity)
         try:
@@ -2651,6 +2657,11 @@ class KnowledgeGraph:
                 last_log_count = total
                 last_log_time = now
 
+        # Final completion log for small/medium projects whose totals never
+        # crossed a heartbeat threshold (<10k entities, <30s).
+        if total_count and total != last_log_count:
+            logger.info(f"  PART_OF: {total:,}/{total_count:,} (100%)")
+
         return total
 
     async def add_entities_batch(
@@ -3021,6 +3032,11 @@ class KnowledgeGraph:
                 logger.info(f"  PART_OF: {total:,}/{total_count:,} ({pct:.0f}%)")
                 last_log_count = total
                 last_log_time = now
+
+        # Final completion log for small/medium projects whose totals never
+        # crossed a heartbeat threshold (<10k entities, <30s).
+        if total_count and total != last_log_count:
+            logger.info(f"  PART_OF: {total:,}/{total_count:,} (100%)")
 
         return total
 

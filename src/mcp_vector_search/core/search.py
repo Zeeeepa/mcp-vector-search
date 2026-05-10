@@ -31,6 +31,19 @@ from .vectors_backend import VectorsBackend
 # Default k=60 is standard in literature for balancing vector and keyword search ranks
 RRF_K = 60
 
+# Standard chunk metadata columns for projected reads — avoids loading the
+# 768-d vector column on per-chunk metadata lookups.
+_CHUNK_META_COLS: list[str] = [
+    "chunk_id",
+    "content",
+    "file_path",
+    "start_line",
+    "end_line",
+    "language",
+    "chunk_type",
+    "name",
+]
+
 
 class SearchMode(StrEnum):
     """Search mode for semantic search engine."""
@@ -1022,14 +1035,15 @@ class SemanticSearchEngine:
                     # pull a single row with only the columns we need.
                     try:
                         scanner = self._vectors_backend._table.to_lance().scanner(
-                            columns=["model_version", "vector"], limit=1
+                            columns=["model_version"], limit=1
                         )
                         arrow_tbl = scanner.to_table()
                         if arrow_tbl.num_rows == 0:
                             df = None
                         else:
                             df = arrow_tbl.to_pandas()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"scanner fallback at model_version_check: {e}")
                         df = self._vectors_backend._table.to_pandas().head(1)
                     if (
                         df is not None
@@ -1046,22 +1060,6 @@ class SemanticSearchEngine:
                             logger.warning(
                                 f"Model mismatch: Index was built with '{stored_model}', "
                                 f"searching with '{current_model}'. Results may be poor. "
-                                f"Reindex with --force to rebuild with current model."
-                            )
-
-                        # Check for dimension mismatch
-                        stored_vector = df.iloc[0]["vector"]
-                        stored_dim = len(stored_vector)
-                        # Use embed_query() so query prefix is applied for asymmetric models
-                        if hasattr(embedding_func, "embed_query"):
-                            query_dim = len(embedding_func.embed_query(query))
-                        else:
-                            query_dim = len(embedding_func([query])[0])
-
-                        if stored_dim != query_dim:
-                            raise SearchError(
-                                f"Dimension mismatch: Index has {stored_dim}D vectors, "
-                                f"current model produces {query_dim}D. "
                                 f"Reindex with --force to rebuild with current model."
                             )
                 except Exception as e:
@@ -1662,18 +1660,6 @@ class SemanticSearchEngine:
                 )
             vectors_table = self._vectors_backend._table
 
-            # Columns we actually consume below — explicit projection avoids
-            # loading the 768-d vector column on every per-chunk fetch.
-            _meta_cols = [
-                "chunk_id",
-                "content",
-                "file_path",
-                "start_line",
-                "end_line",
-                "language",
-                "chunk_type",
-                "name",
-            ]
             for chunk_id, bm25_score in bm25_results:
                 if len(search_results) >= limit:
                     break
@@ -1686,11 +1672,12 @@ class SemanticSearchEngine:
                     try:
                         scanner = vectors_table.to_lance().scanner(
                             filter=f"chunk_id = '{escaped}'",
-                            columns=_meta_cols,
+                            columns=_CHUNK_META_COLS,
                             limit=1,
                         )
                         df = scanner.to_table().to_pandas()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"scanner fallback at bm25_chunk_lookup: {e}")
                         df = vectors_table.to_pandas().query(
                             f"chunk_id == '{chunk_id}'"
                         )
@@ -1828,7 +1815,8 @@ class SemanticSearchEngine:
                             columns=["chunk_id", "file_path"]
                         )
                         df = scanner.to_table().to_pandas()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"scanner fallback at bm25_tests_only_filter: {e}")
                         df = _tbl.to_pandas()
                     df_subset = df[df["chunk_id"].isin(chunk_ids_in_play)]
                     test_chunk_ids = {
@@ -1970,24 +1958,17 @@ class SemanticSearchEngine:
                             # during hybrid RRF merge.
                             _tbl_inner = self._vectors_backend._table
                             _escaped = chunk_id.replace(chr(39), chr(39) * 2)
-                            _meta_cols_inner = [
-                                "chunk_id",
-                                "content",
-                                "file_path",
-                                "start_line",
-                                "end_line",
-                                "language",
-                                "chunk_type",
-                                "name",
-                            ]
                             try:
                                 scanner = _tbl_inner.to_lance().scanner(
                                     filter=f"chunk_id = '{_escaped}'",
-                                    columns=_meta_cols_inner,
+                                    columns=_CHUNK_META_COLS,
                                     limit=1,
                                 )
                                 df = scanner.to_table().to_pandas()
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(
+                                    f"scanner fallback at hybrid_rrf_chunk_lookup: {e}"
+                                )
                                 df = _tbl_inner.to_pandas().query(
                                     f"chunk_id == '{chunk_id}'"
                                 )
