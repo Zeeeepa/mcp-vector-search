@@ -1062,6 +1062,38 @@ class SemanticSearchEngine:
                                 f"searching with '{current_model}'. Results may be poor. "
                                 f"Reindex with --force to rebuild with current model."
                             )
+                        else:
+                            # Model names match — verify embedding dimension via
+                            # schema inspection (no vector row read). Restores the
+                            # dim-check dropped in c8d447d when "vector" was removed
+                            # from the column projection.
+                            try:
+                                arrow_schema = self._vectors_backend._table.schema
+                                vector_field = arrow_schema.field("vector")
+                                stored_dim = vector_field.type.list_size
+                                if hasattr(embedding_func, "embed_query"):
+                                    current_dim = len(
+                                        embedding_func.embed_query("dim_check")
+                                    )
+                                else:
+                                    current_dim = len(embedding_func(["dim_check"])[0])
+                                if stored_dim != current_dim:
+                                    raise SearchError(
+                                        f"Embedding dimension mismatch: index has "
+                                        f"{stored_dim}-d vectors but current model "
+                                        f"produces {current_dim}-d. Run `mvs reindex` "
+                                        f"to rebuild."
+                                    )
+                            except KeyError:
+                                logger.debug(
+                                    "vector field not found in schema; skipping dim check"
+                                )
+                            except AttributeError:
+                                logger.debug(
+                                    "vector field has no list_size; skipping dim check"
+                                )
+                except SearchError:
+                    raise
                 except Exception as e:
                     # Non-fatal: log and continue
                     logger.debug(f"Could not check model version: {e}")
@@ -1126,6 +1158,8 @@ class SemanticSearchEngine:
 
             return search_results
 
+        except SearchError:
+            raise
         except Exception as e:
             logger.error(f"VectorsBackend search failed: {e}")
             raise SearchError(f"Vector search failed: {e}") from e
