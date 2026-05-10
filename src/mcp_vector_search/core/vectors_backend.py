@@ -1191,7 +1191,8 @@ class VectorsBackend:
                     except Exception:
                         df = self._table.to_pandas().query(f"chunk_id in [{id_list}]")
                     rows_iter = (
-                        (row["chunk_id"], row["vector"]) for _, row in df.iterrows()
+                        (str(row["chunk_id"]), row["vector"])
+                        for _, row in df.iterrows()
                     )
 
                 # Extract vectors from results
@@ -1225,9 +1226,9 @@ class VectorsBackend:
         if self._table is None:
             return False
 
+        escaped = chunk_id.replace(chr(39), chr(39) * 2)
         try:
             # Fix 3: column-projected scanner avoids loading 768-float vectors
-            escaped = chunk_id.replace(chr(39), chr(39) * 2)
             scanner = self._table.to_lance().scanner(
                 filter=f"chunk_id = '{escaped}'",
                 columns=["chunk_id"],
