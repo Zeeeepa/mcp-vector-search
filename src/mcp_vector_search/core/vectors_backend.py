@@ -1226,6 +1226,7 @@ class VectorsBackend:
         if self._table is None:
             return False
 
+        # Escape single quotes in chunk_id to prevent SQL injection
         escaped = chunk_id.replace(chr(39), chr(39) * 2)
         try:
             # Fix 3: column-projected scanner avoids loading 768-float vectors
