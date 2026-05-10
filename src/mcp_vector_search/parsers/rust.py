@@ -27,6 +27,15 @@ class RustParser(BaseParser):
 
             self._language = get_language("rust")
             self._parser = get_parser("rust")
+            # Verify the parser is actually callable — version mismatches between
+            # tree_sitter_language_pack and the installed tree-sitter C extension
+            # can produce a 'builtins.Parser' object that lacks .parse()
+            if not callable(getattr(self._parser, "parse", None)):
+                raise RuntimeError(
+                    f"tree_sitter_language_pack returned an incompatible parser "
+                    f"(type={type(self._parser).__module__}.{type(self._parser).__name__}). "
+                    f"Run: pip install --upgrade tree-sitter tree-sitter-language-pack"
+                )
             self._use_tree_sitter = True
             return
         except Exception:
