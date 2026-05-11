@@ -1531,10 +1531,13 @@ class SemanticSearchEngine:
         If BM25 index doesn't exist but LanceDB does, attempts lazy build.
         """
         try:
-            # Detect BM25 index path from database persist_directory
+            # Detect BM25 index path from database persist_directory.
+            # NOTE: persist_directory is the lance/ subdirectory (e.g.
+            # {mcp_dir}/lance), but the BM25 index lives in the parent
+            # .mcp-vector-search/ directory, so we use .parent here.
             index_path = getattr(self.database, "persist_directory", None)
             if index_path is not None:
-                bm25_path = index_path / "bm25_index.pkl"
+                bm25_path = index_path.parent / "bm25_index.pkl"
 
                 if bm25_path.exists():
                     # Load BM25 index
