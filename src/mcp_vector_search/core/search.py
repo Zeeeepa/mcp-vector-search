@@ -398,7 +398,13 @@ class SemanticSearchEngine:
 
             # Apply cross-encoder reranking if enabled and we have results
             # Reranking improves precision by scoring (query, document) pairs jointly
-            if use_rerank and results and len(results) > 1:
+            # Skip for BM25: reranking with embeddings on keyword scores is both wrong and expensive
+            if (
+                use_rerank
+                and results
+                and len(results) > 1
+                and search_mode != SearchMode.BM25
+            ):
                 try:
                     results = await self._apply_cross_encoder_reranking(
                         results=results,
@@ -419,7 +425,14 @@ class SemanticSearchEngine:
 
             # Apply MMR diversity filtering if enabled and we have enough results
             # MMR improves diversity by penalizing results similar to already-selected ones
-            if use_mmr and results and len(results) > 1 and self._vectors_backend:
+            # Skip for BM25: MMR requires embeddings but BM25 has no semantic similarity to measure
+            if (
+                use_mmr
+                and results
+                and len(results) > 1
+                and self._vectors_backend
+                and search_mode != SearchMode.BM25
+            ):
                 try:
                     results = await self._apply_mmr_reranking(
                         results=results,
