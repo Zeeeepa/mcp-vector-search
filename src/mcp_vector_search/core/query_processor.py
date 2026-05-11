@@ -151,7 +151,7 @@ class QueryProcessor:
         "boolean": "boolean true false",
     }
 
-    def __init__(self, base_threshold: float = 0.3) -> None:
+    def __init__(self, base_threshold: float = 0.2) -> None:
         """Initialize query processor.
 
         Args:
@@ -264,4 +264,4 @@ class QueryProcessor:
         if any(pattern in query for pattern in ["()", ".", "->", "=>", "::"]):
             return max(0.25, base_threshold - 0.1)
 
-        return base_threshold
+        return max(0.15, base_threshold)

@@ -32,7 +32,7 @@ class SearchHandlers:
         """
         query = args.get("query", "")
         limit = args.get("limit", 10)
-        similarity_threshold = args.get("similarity_threshold", 0.3)
+        similarity_threshold = args.get("similarity_threshold", 0.2)
         file_extensions = args.get("file_extensions")
         language = args.get("language")
         function_name = args.get("function_name")
@@ -166,7 +166,7 @@ class SearchHandlers:
         file_path = args.get("file_path", "")
         function_name = args.get("function_name")
         limit = args.get("limit", 10)
-        similarity_threshold = args.get("similarity_threshold", 0.3)
+        similarity_threshold = args.get("similarity_threshold", 0.2)
         search_mode = args.get("search_mode", "hybrid")
         hybrid_alpha = float(args.get("hybrid_alpha", 0.7))
         tests_only = args.get("tests_only", False)

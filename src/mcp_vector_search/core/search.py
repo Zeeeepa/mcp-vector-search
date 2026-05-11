@@ -68,7 +68,7 @@ class SemanticSearchEngine:
         self,
         database: VectorDatabase,
         project_root: Path,
-        similarity_threshold: float = 0.3,
+        similarity_threshold: float = 0.2,
         auto_indexer: AutoIndexer | None = None,
         enable_auto_reindex: bool = True,
         enable_kg: bool = True,
@@ -340,11 +340,19 @@ class SemanticSearchEngine:
                     )
                 else:
                     # Pure vector search (default)
+                    # Over-retrieve candidates so the post-threshold filter still
+                    # leaves enough results to satisfy the requested ``limit``.
+                    # With MiniLM-L6-v2 on code, many valid chunks score 0.10–0.28
+                    # so a meaningful fraction can be filtered out. Fetch a larger
+                    # pool, then trim at the caller.
+                    vector_retrieval_limit = min(
+                        max(limit * 3, retrieval_limit), retrieval_limit * 2
+                    )
                     # Use VectorsBackend if available, otherwise fall back to ChromaDB
                     if self._vectors_backend:
                         variant_results = await self._search_vectors_backend(
                             variant_query,
-                            retrieval_limit,
+                            vector_retrieval_limit,
                             filters,
                             threshold,
                             tests_only=tests_only,
@@ -354,7 +362,7 @@ class SemanticSearchEngine:
                         variant_results = await self._retry_handler.search_with_retry(
                             database=self.database,
                             query=variant_query,
-                            limit=retrieval_limit,
+                            limit=vector_retrieval_limit,
                             filters=filters,
                             threshold=threshold,
                         )

@@ -867,7 +867,7 @@ class LanceVectorDatabase:
         query: str,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float = 0.2,
         where_extra: str | None = None,
     ) -> list[SearchResult]:
         """Search for similar code chunks with LRU caching.

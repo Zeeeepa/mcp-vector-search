@@ -327,18 +327,18 @@ MODEL_SPECIFICATIONS = {
 
 # Default similarity thresholds by language
 DEFAULT_SIMILARITY_THRESHOLDS = {
-    "python": 0.3,
-    "javascript": 0.3,
-    "typescript": 0.3,
-    "java": 0.3,
-    "cpp": 0.3,
-    "c": 0.3,
-    "go": 0.3,
-    "rust": 0.3,
-    "json": 0.4,  # JSON files may have more structural similarity
-    "markdown": 0.3,  # Markdown documentation
-    "text": 0.3,  # Plain text files
-    "default": 0.3,
+    "python": 0.2,
+    "javascript": 0.2,
+    "typescript": 0.2,
+    "java": 0.2,
+    "cpp": 0.2,
+    "c": 0.2,
+    "go": 0.2,
+    "rust": 0.2,
+    "json": 0.2,  # JSON files may have more structural similarity
+    "markdown": 0.2,  # Markdown documentation
+    "text": 0.2,  # Plain text files
+    "default": 0.2,
 }
 
 # Default chunk sizes by language (in tokens)
